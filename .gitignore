@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
+dist/
+build/
+
+# Project data
+data/
+repos/
+logs/
+
+# Neo4j
+neo4j/data/
+neo4j/logs/
