@@ -3,12 +3,17 @@ from entity_extractor import extract_entities
 
 file_path = "parser/repository_loader.py"
 
-entities = extract_entities(file_path)
+result = extract_entities(file_path)
 
-print("Extracted Repository Information")
-print("--------------------------------")
+entities = result["entities"]
+relationships = result["relationships"]
 
-print("File:", entities["file"])
+
+print("EXTRACTED ENTITIES")
+print("==================")
+
+print("\nFile:")
+print(entities["file"])
 
 print("\nClasses:")
 for item in entities["classes"]:
@@ -25,3 +30,14 @@ for item in entities["methods"]:
 print("\nImports:")
 for item in entities["imports"]:
     print(" -", item)
+
+
+print("\n\nRELATIONSHIPS")
+print("=============")
+
+for relationship in relationships:
+    print(
+        f"{relationship['source']} "
+        f"--[{relationship['relationship']}]--> "
+        f"{relationship['target']}"
+    )
