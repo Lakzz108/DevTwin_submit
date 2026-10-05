@@ -1,7 +1,9 @@
+import sys
+
 from entity_extractor import extract_entities
 
 
-file_path = "parser/repository_loader.py"
+file_path = sys.argv[1]
 
 result = extract_entities(file_path)
 

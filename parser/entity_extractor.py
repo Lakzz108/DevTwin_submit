@@ -12,6 +12,50 @@ def get_node_text(node: Node) -> str:
     return node.text.decode("utf-8")
 
 
+def normalize_import(node: Node) -> str:
+    """
+    Convert a Python import statement into a simple module name.
+
+    Examples:
+        import sys
+            -> sys
+
+        import tree_sitter_python
+            -> tree_sitter_python
+
+        from pathlib import Path
+            -> pathlib
+
+        from code_parser import parse_python_file
+            -> code_parser
+    """
+
+    import_text = get_node_text(node).strip()
+
+    if node.type == "import_statement":
+
+        import_text = import_text.replace("import ", "", 1).strip()
+
+        # Handle aliases such as:
+        # import numpy as np
+        if " as " in import_text:
+            import_text = import_text.split(" as ")[0].strip()
+
+        return import_text
+
+    if node.type == "import_from_statement":
+
+        import_text = import_text.replace("from ", "", 1).strip()
+
+        # Everything before " import " is the module.
+        if " import " in import_text:
+            import_text = import_text.split(" import ", 1)[0].strip()
+
+        return import_text
+
+    return import_text
+
+
 def extract_entities(file_path: str):
     """
     Extract entities and relationships from a Python source file.
@@ -29,10 +73,11 @@ def extract_entities(file_path: str):
 
     relationships = []
 
-    def visit(node: Node, current_class=None):
+    def visit(node: Node, current_class=None, inside_function=False):
 
         # Class
         if node.type == "class_definition":
+
             class_name = get_node_text(
                 node.child_by_field_name("name")
             )
@@ -50,12 +95,16 @@ def extract_entities(file_path: str):
 
         # Function / Method
         elif node.type == "function_definition":
+
             function_name = get_node_text(
                 node.child_by_field_name("name")
             )
 
             if function_name:
-                if current_class:
+
+                # Function inside a class = method
+                if current_class and not inside_function:
+
                     method_name = f"{current_class}.{function_name}"
 
                     entities["methods"].append(method_name)
@@ -66,7 +115,9 @@ def extract_entities(file_path: str):
                         "target": method_name,
                     })
 
-                else:
+                # Top-level function
+                elif not inside_function:
+
                     entities["functions"].append(function_name)
 
                     relationships.append({
@@ -75,24 +126,31 @@ def extract_entities(file_path: str):
                         "target": function_name,
                     })
 
+                # Nested function
+                # Do not add it as a top-level entity.
+
+                inside_function = True
+
         # Imports
         elif node.type in {
             "import_statement",
             "import_from_statement",
         }:
-            import_name = get_node_text(node)
 
-            entities["imports"].append(import_name)
+            import_target = normalize_import(node)
 
-            relationships.append({
-                "source": file_path,
-                "relationship": "IMPORTS",
-                "target": import_name,
-            })
+            if import_target:
+                entities["imports"].append(import_target)
 
-        # Visit child nodes
+                relationships.append({
+                    "source": file_path,
+                    "relationship": "IMPORTS",
+                    "target": import_target,
+                })
+
+        # Visit children
         for child in node.children:
-            visit(child, current_class)
+            visit(child, current_class, inside_function)
 
     visit(tree.root_node)
 
