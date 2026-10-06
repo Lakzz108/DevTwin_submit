@@ -4,13 +4,15 @@ import tree_sitter_python
 
 PYTHON_LANGUAGE = Language(tree_sitter_python.language())
 
-parser = Parser(PYTHON_LANGUAGE)
-
 
 def parse_python_file(file_path: str):
     """
     Parse a Python source file using Tree-sitter.
     """
+
+    # Parser is mutable native state. Create one per parse so concurrent API
+    # requests cannot call into the same Tree-sitter parser instance.
+    parser = Parser(PYTHON_LANGUAGE)
 
     with open(file_path, "r", encoding="utf-8") as file:
         source_code = file.read()

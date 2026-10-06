@@ -1,3 +1,6 @@
+from pathlib import Path
+
+
 def build_graph_data(analysis_result):
     """
     Convert repository analysis results into graph-ready
@@ -11,6 +14,20 @@ def build_graph_data(analysis_result):
     relationships = []
 
     node_ids = set()
+
+    # Build a conservative lookup from Python module names to analyzed files.
+    # A basename such as "utils" is only usable when it identifies one file.
+    module_to_files = {}
+    for file_info in analysis_result["files"]:
+        file_path = Path(file_info["file"])
+        module_names = {file_path.stem}
+        if file_path.name == "__init__.py":
+            module_names.add(file_path.parent.name)
+        else:
+            module_names.add(".".join(file_path.with_suffix("").parts))
+
+        for module_name in module_names:
+            module_to_files.setdefault(module_name, set()).add(file_info["file"])
 
     def add_node(node_id, node_type, name, file=None):
         """
@@ -120,13 +137,18 @@ def build_graph_data(analysis_result):
         # IMPORT NODES
         for import_name in file_info["imports"]:
 
-            import_id = f"module:{import_name}"
+            matching_files = module_to_files.get(import_name, set())
 
-            add_node(
-                node_id=import_id,
-                node_type="MODULE",
-                name=import_name,
-            )
+            if len(matching_files) == 1:
+                imported_file = next(iter(matching_files))
+                import_id = f"file:{imported_file}"
+            else:
+                import_id = f"module:{import_name}"
+                add_node(
+                    node_id=import_id,
+                    node_type="MODULE",
+                    name=import_name,
+                )
 
             add_relationship(
                 source=file_id,
