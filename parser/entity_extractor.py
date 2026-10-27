@@ -1,6 +1,7 @@
 from tree_sitter import Node
 
-from code_parser import parse_python_file
+from code_parser import parse_python_file, parse_source_file
+from language_detector import detect_language
 
 
 def get_node_text(node: Node) -> str:
@@ -56,7 +57,7 @@ def normalize_import(node: Node) -> str:
     return import_text
 
 
-def extract_entities(file_path: str):
+def _extract_python_entities(file_path: str):
     """
     Extract entities and relationships from a Python source file.
     """
@@ -158,3 +159,18 @@ def extract_entities(file_path: str):
         "entities": entities,
         "relationships": relationships,
     }
+
+
+def extract_entities(file_path: str):
+    """Extract entities with the Python-compatible or generic language parser."""
+
+    language = detect_language(file_path)
+    if language is None:
+        raise ValueError(f"Unsupported source file extension: {file_path}")
+    if language == "python":
+        return _extract_python_entities(file_path)
+
+    language, tree = parse_source_file(file_path)
+    from multilanguage_entity_extractor import extract_tree_entities
+
+    return extract_tree_entities(file_path, language, tree)

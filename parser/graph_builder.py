@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def build_graph_data(analysis_result):
@@ -25,6 +25,7 @@ def build_graph_data(analysis_result):
             module_names.add(file_path.parent.name)
         else:
             module_names.add(".".join(file_path.with_suffix("").parts))
+            module_names.add(file_path.with_suffix("").as_posix())
 
         for module_name in module_names:
             module_to_files.setdefault(module_name, set()).add(file_info["file"])
@@ -59,6 +60,29 @@ def build_graph_data(analysis_result):
             "relationship": relationship_type,
             "target": target,
         })
+
+    def resolve_import(importer, import_name):
+        """Resolve exact module names and relative JS/TS paths conservatively."""
+
+        matches = module_to_files.get(import_name, set())
+        if matches:
+            return matches
+
+        if not import_name.startswith("."):
+            return set()
+
+        importer_path = PurePosixPath(importer)
+        imported_path = (importer_path.parent / import_name).as_posix()
+        candidates = {imported_path}
+        path = PurePosixPath(imported_path)
+        if path.suffix:
+            candidates.add(path.with_suffix("").as_posix())
+        candidates.add((path / "index").as_posix())
+
+        resolved = set()
+        for candidate in candidates:
+            resolved.update(module_to_files.get(candidate, set()))
+        return resolved
 
     # Process every analyzed file
     for file_info in analysis_result["files"]:
@@ -137,7 +161,7 @@ def build_graph_data(analysis_result):
         # IMPORT NODES
         for import_name in file_info["imports"]:
 
-            matching_files = module_to_files.get(import_name, set())
+            matching_files = resolve_import(file_path, import_name)
 
             if len(matching_files) == 1:
                 imported_file = next(iter(matching_files))
