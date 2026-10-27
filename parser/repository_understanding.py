@@ -28,6 +28,27 @@ LANGUAGES = {
     ".go": "Go",
 }
 README_NAMES = ("README.md", "README.rst", "README.txt", "README")
+FRAMEWORK_EVIDENCE = {
+    "FastAPI": {"fastapi", "fastapi_users"},
+    "Flask": {"flask"},
+    "Django": {"django"},
+    "React": {"react", "react-dom"},
+    "Next.js": {"next"},
+    "Vue": {"vue"},
+    "Angular": {"@angular/core"},
+    "Express": {"express"},
+    "NestJS": {"@nestjs/core"},
+    "Fastify": {"fastify"},
+    "Spring": {"spring-boot", "spring-web", "spring"},
+    "Gin": {"github.com/gin-gonic/gin"},
+    "Echo": {"github.com/labstack/echo"},
+}
+FRONTEND_FRAMEWORKS = {"React", "Next.js", "Vue", "Angular"}
+BACKEND_FRAMEWORKS = {
+    "FastAPI", "Flask", "Django", "Express", "NestJS", "Fastify",
+    "Spring", "Gin", "Echo",
+}
+BUILD_MARKERS = {"npm scripts", "pyproject.toml", "Maven", "Gradle", "Cargo", "Go modules"}
 
 
 def build_project_understanding(repository_root, analysis, graph_data, chunks):
@@ -80,10 +101,20 @@ def build_project_understanding(repository_root, analysis, graph_data, chunks):
     technologies = _declared_technologies(root)
     entry_points = _entry_points(root, files)
     documented_components = _documented_components(root, files)
+    frameworks = _framework_evidence(files, technologies)
+    project_type = _project_type(frameworks)
+    main_components = _main_components(folders, documented_components)
+    architecture_summary = _architecture_summary(entry_points, import_summary)
+    dependencies = [technology for technology in technologies if technology not in BUILD_MARKERS]
+    purpose = readme["summary"] or "Not enough information available from the analyzed repository."
 
     return {
         "repository_name": root.name,
-        "purpose": readme["summary"] or "Not enough information available from the analyzed repository.",
+        "project_name": root.name,
+        "purpose": purpose,
+        "summary": purpose,
+        "project_type": project_type,
+        "project_type_evidence": frameworks if project_type else [],
         "purpose_evidence": readme["file"],
         "documentation_evidence": readme["documents"],
         "analysis_scope": (
@@ -92,6 +123,7 @@ def build_project_understanding(repository_root, analysis, graph_data, chunks):
             "call, export, inheritance, and API relationships are static evidence; "
             "runtime control flow is not inferred."
         ),
+        "architecture_summary": architecture_summary,
         "how_it_works": (
             f"Static analysis found {import_summary['total']} imports: "
             f"{import_summary['internal']} resolved inside this repository, "
@@ -104,10 +136,14 @@ def build_project_understanding(repository_root, analysis, graph_data, chunks):
             "chunks. It does not infer service layers or runtime control flow."
         ),
         "technologies": technologies,
+        "frameworks": frameworks,
+        "dependencies": dependencies,
         "import_analysis": import_summary,
         "languages": languages,
+        "main_components": main_components,
         "documented_components": documented_components,
         "folders": folders,
+        "directory_summary": folders,
         "entry_points": entry_points,
         "most_connected_files": connected_files[:8],
         "statistics": {
@@ -132,6 +168,104 @@ def build_project_understanding(repository_root, analysis, graph_data, chunks):
             for edge in import_edges[:24]
         ],
     }
+
+
+def _framework_evidence(files, technologies):
+    """Report recognized frameworks only when manifests or imports show them."""
+
+    manifest_names = {
+        name.strip().lower().replace("_", "-") for name in technologies
+    }
+    imported_modules = {
+        str(module).strip().lower().replace("_", "-")
+        for file_info in files
+        for module in file_info.get("imports", [])
+    }
+    for file_info in files:
+        for record in file_info.get("import_records", []):
+            imported_modules.add(
+                str(record.get("module", "")).strip().lower().replace("_", "-")
+            )
+
+    evidence = []
+    for framework, names in FRAMEWORK_EVIDENCE.items():
+        normalized_names = {name.lower().replace("_", "-") for name in names}
+        manifest_match = normalized_names & manifest_names
+        import_match = {
+            imported for imported in imported_modules
+            if any(
+                imported == name or imported.startswith(name + ".")
+                or imported.startswith(name + "/")
+                for name in normalized_names
+            )
+        }
+        if manifest_match or import_match:
+            sources = []
+            if manifest_match:
+                sources.append("declared dependency: " + ", ".join(sorted(manifest_match)))
+            if import_match:
+                sources.append("source import: " + ", ".join(sorted(import_match)))
+            evidence.append({"name": framework, "evidence": "; ".join(sources)})
+    return evidence
+
+
+def _project_type(frameworks):
+    """Infer a broad application category only from recognized framework evidence."""
+
+    names = {item["name"] for item in frameworks}
+    has_frontend = bool(names & FRONTEND_FRAMEWORKS)
+    has_backend = bool(names & BACKEND_FRAMEWORKS)
+    if has_frontend and has_backend:
+        return "Full-stack web application"
+    if has_frontend:
+        return "Web frontend"
+    if has_backend:
+        return "Backend web application or API service"
+    return None
+
+
+def _main_components(folders, documented_components):
+    """Summarize observed repository areas and attach explicit source docs."""
+
+    components = [
+        {
+            "name": f"{folder['name']}/",
+            "description": f"Contains {folder['source_files']} scanned source files.",
+            "evidence": "Repository directory structure",
+        }
+        for folder in folders[:8]
+    ]
+    components.extend(
+        {
+            "name": component["name"],
+            "file": component["file"],
+            "description": component["purpose"],
+            "evidence": "Source documentation or docstring",
+        }
+        for component in documented_components[:8]
+    )
+    return components[:12]
+
+
+def _architecture_summary(entry_points, import_summary):
+    """Describe only observed entry-point and static import evidence."""
+
+    entry_files = sorted({item["file"] for item in entry_points})
+    parts = []
+    if entry_files:
+        parts.append("Entry-point evidence was found in " + ", ".join(entry_files[:4]) + ".")
+    internal = import_summary.get("internal", 0)
+    external = import_summary.get("external", 0)
+    unresolved = import_summary.get("unresolved", 0)
+    if internal or external or unresolved:
+        parts.append(
+            f"Static analysis counted {internal} internal, {external} external, "
+            f"and {unresolved} unresolved imports."
+        )
+    if not parts:
+        return "Not enough repository evidence to summarize the architecture."
+    parts.append("These relationships do not establish runtime execution order.")
+    return " ".join(parts)
 
 
 def summarize_file(repository_root, relative_path, analysis, graph_data):

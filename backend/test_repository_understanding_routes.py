@@ -28,6 +28,8 @@ class RepositoryUnderstandingRoutesTest(unittest.TestCase):
 
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual("octocat/hello", response.json()["repository_name"])
+        self.assertEqual("octocat/hello", response.json()["project_understanding"]["project_name"])
+        self.assertEqual("octocat/hello", response.json()["project_understanding"]["repository_name"])
         self.assertEqual("github", response.json()["source"])
         fetch.assert_called_once_with("https://github.com/octocat/hello")
         self.assertEqual(Path(temporary_directory), ingest.call_args.args[0])

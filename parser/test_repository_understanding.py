@@ -9,6 +9,7 @@ class RepositoryUnderstandingTest(unittest.TestCase):
     def test_project_overview_uses_readme_manifest_and_extracted_graph_facts(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
+            project_directory_name = root.name
             (root / "README.md").write_text(
                 "# Weather service\n\nFetches weather data for a city.\n",
                 encoding="utf-8",
@@ -37,7 +38,14 @@ class RepositoryUnderstandingTest(unittest.TestCase):
             overview = build_project_understanding(root, analysis, graph, [])
 
         self.assertIn("Fetches weather data", overview["purpose"])
+        self.assertEqual(project_directory_name, overview["project_name"])
+        self.assertEqual("Backend web application or API service", overview["project_type"])
+        self.assertEqual("Fetches weather data for a city.", overview["summary"])
         self.assertIn("fastapi", overview["technologies"])
+        self.assertIn("fastapi", overview["dependencies"])
+        self.assertIn("FastAPI", [item["name"] for item in overview["frameworks"]])
+        self.assertIn("app.py", overview["architecture_summary"])
+        self.assertTrue(any(item.get("file") == "app.py" for item in overview["main_components"]))
         self.assertEqual(1, overview["statistics"]["files"])
         self.assertEqual("Python __main__ guard", overview["entry_points"][0]["name"])
         self.assertIn("runtime", overview["architecture_note"])

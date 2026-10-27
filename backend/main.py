@@ -216,7 +216,8 @@ def ingest_github_repository(request: GitHubRepositoryRequest):
     )
     result.setdefault("repository_name", repository_name)
     if isinstance(result.get("project_understanding"), dict):
-        result["project_understanding"].setdefault("repository_name", repository_name)
+        result["project_understanding"]["repository_name"] = repository_name
+        result["project_understanding"]["project_name"] = repository_name
     result["source"] = "github"
     return result
 
@@ -311,6 +312,7 @@ def open_existing_github_repository(request: GitHubRepositoryRequest):
     result = _open_repository(repository_path)
     result["repository_name"] = repository_name
     result["project_understanding"]["repository_name"] = repository_name
+    result["project_understanding"]["project_name"] = repository_name
     result["source"] = "github"
     return result
 
