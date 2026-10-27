@@ -19,7 +19,15 @@ if str(PARSER_PATH) not in sys.path:
     sys.path.insert(0, str(PARSER_PATH))
 
 from repository_analyzer import analyze_repository  # noqa: E402
+from github_repository import (  # noqa: E402
+    GitHubRepositoryError,
+    fetch_public_repository,
+)
 from repository_chunker import build_repository_chunks  # noqa: E402
+from repository_understanding import (  # noqa: E402
+    build_project_understanding,
+    summarize_file,
+)
 from graph.chunk_graph import add_chunks_to_graph  # noqa: E402
 from graph.neo4j_queries import Neo4jGraphReader  # noqa: E402
 from graph.neo4j_writer import Neo4jGraphWriter  # noqa: E402
@@ -47,6 +55,7 @@ app.add_middleware(
 )
 
 _embedding_provider = None
+_repository_cache = {}
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +78,15 @@ class QueryRequest(BaseModel):
         if not value.strip():
             raise ValueError("question must not be blank")
         return value.strip()
+
+
+class GitHubRepositoryRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="Public GitHub repository URL")
+
+
+class FileSummaryRequest(BaseModel):
+    repository_path: str = Field(..., min_length=1)
+    file: str = Field(..., min_length=1)
 
 
 def get_embedding_provider():
@@ -114,6 +132,8 @@ async def invalid_request_handler(request, error):
         message = "Please enter a question first."
     elif "path" in invalid_fields:
         message = "Please provide a repository folder path."
+    elif "url" in invalid_fields:
+        message = "Please provide a public GitHub repository URL."
     else:
         message = "One or more request values are invalid. Check them and try again."
 
@@ -176,8 +196,37 @@ def ingest_repository(request: RepositoryRequest):
         )
 
     repository_id = request.repository_id or make_repository_id(repository_path)
+    return _ingest_repository(repository_path, repository_id)
+
+
+@app.post("/repositories/github")
+def ingest_github_repository(request: GitHubRepositoryRequest):
+    """Clone/fetch a public GitHub repository, then run the existing pipeline."""
+
+    try:
+        repository_path, repository_name = fetch_public_repository(request.url)
+    except GitHubRepositoryError as error:
+        message = str(error)
+        status_code = 422 if message.startswith(("Enter ", "Use ", "The GitHub")) else 400
+        raise HTTPException(status_code=status_code, detail=message) from error
+    result = _ingest_repository(
+        repository_path,
+        make_repository_id(repository_path),
+        repository_name=repository_name,
+    )
+    result.setdefault("repository_name", repository_name)
+    if isinstance(result.get("project_understanding"), dict):
+        result["project_understanding"].setdefault("repository_name", repository_name)
+    result["source"] = "github"
+    return result
+
+
+def _ingest_repository(repository_path, repository_id, repository_name=None):
+    """Run analysis, graph construction, embeddings and persistence."""
+
     try:
         analysis = analyze_repository(repository_path)
+        analysis["repository_name"] = repository_name or Path(repository_path).name
         if not analysis["files"]:
             raise HTTPException(
                 status_code=422,
@@ -189,6 +238,17 @@ def ingest_repository(request: RepositoryRequest):
             analysis_result=analysis,
         )
         graph_data = add_chunks_to_graph(build_graph_data(analysis), chunks)
+        _repository_cache[str(Path(repository_path).resolve())] = {
+            "analysis": analysis,
+            "graph_data": graph_data,
+            "chunks": chunks,
+        }
+        project_understanding = build_project_understanding(
+            repository_path,
+            analysis,
+            graph_data,
+            chunks,
+        )
         provider = get_embedding_provider()
         embeddings = provider.embed_chunks(chunks)
     except HTTPException:
@@ -211,6 +271,8 @@ def ingest_repository(request: RepositoryRequest):
     return {
         "repository_id": repository_id,
         "repository_path": str(repository_path),
+        "repository_name": project_understanding["repository_name"],
+        "project_understanding": project_understanding,
         "files_analyzed": len(analysis["files"]),
         "chunks_embedded": embedding_count,
         **graph_result,
@@ -233,6 +295,30 @@ def open_existing_repository(request: RepositoryRequest):
             detail="Repository path must point to a folder.",
         )
 
+    return _open_repository(repository_path)
+
+
+@app.post("/repositories/github/open")
+def open_existing_github_repository(request: GitHubRepositoryRequest):
+    """Fetch the public repository and open its saved graph by its URL."""
+
+    try:
+        repository_path, repository_name = fetch_public_repository(request.url, refresh=False)
+    except GitHubRepositoryError as error:
+        message = str(error)
+        status_code = 422 if message.startswith(("Enter ", "Use ", "The GitHub")) else 400
+        raise HTTPException(status_code=status_code, detail=message) from error
+    result = _open_repository(repository_path)
+    result["repository_name"] = repository_name
+    result["project_understanding"]["repository_name"] = repository_name
+    result["source"] = "github"
+    return result
+
+
+def _open_repository(repository_path):
+    """Open saved graph data and rebuild source-grounded overview facts."""
+
+    repository_path = Path(repository_path).resolve()
     repository_id = make_repository_id(repository_path)
     writer = open_writer()
     try:
@@ -249,12 +335,57 @@ def open_existing_repository(request: RepositoryRequest):
             detail="This folder has not been analyzed by DevTwin yet.",
         )
 
+    analysis = analyze_repository(repository_path)
+    chunks = build_repository_chunks(
+        repository_path,
+        repository_id=repository_id,
+        analysis_result=analysis,
+    )
+    graph_data = add_chunks_to_graph(build_graph_data(analysis), chunks)
+    _repository_cache[str(repository_path)] = {
+        "analysis": analysis,
+        "graph_data": graph_data,
+        "chunks": chunks,
+    }
+    project_understanding = build_project_understanding(
+        repository_path,
+        analysis,
+        graph_data,
+        chunks,
+    )
+
     return {
         "repository_id": repository_id,
         "repository_path": str(repository_path),
+        "repository_name": project_understanding["repository_name"],
+        "project_understanding": project_understanding,
         "files_analyzed": sum(node["type"] == "FILE" for node in graph["nodes"]),
         "graph": graph,
     }
+
+
+@app.post("/repositories/file-summary")
+def repository_file_summary(request: FileSummaryRequest):
+    """Return source/docstring facts for one file inside an analyzed folder."""
+
+    root = Path(request.repository_path).expanduser().resolve()
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="Repository folder was not found.")
+    try:
+        cached = _repository_cache.get(str(root))
+        if cached is None:
+            analysis = analyze_repository(root)
+            chunks = build_repository_chunks(root, analysis_result=analysis)
+            graph_data = add_chunks_to_graph(build_graph_data(analysis), chunks)
+            cached = {"analysis": analysis, "graph_data": graph_data, "chunks": chunks}
+            _repository_cache[str(root)] = cached
+        return summarize_file(root, request.file, cached["analysis"], cached["graph_data"])
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (OSError, UnicodeError) as error:
+        raise HTTPException(status_code=400, detail="Could not read the selected source file.") from error
 
 
 @app.post("/repositories/{repository_id}/query")

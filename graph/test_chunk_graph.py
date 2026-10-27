@@ -32,6 +32,7 @@ class ChunkGraphTest(unittest.TestCase):
             {
                 ("file:src/user.py", "CONTAINS_CHUNK", chunk_node["id"]),
                 (chunk_node["id"], "DESCRIBES", "method:src/user.py:User.login"),
+                ("method:src/user.py:User.login", "HAS_CHUNK", chunk_node["id"]),
             },
             {
                 (edge["source"], edge["relationship"], edge["target"])

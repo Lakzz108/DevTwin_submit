@@ -21,7 +21,7 @@ class Neo4jGraphReader:
             raise ValueError("local_id must be a non-empty string")
         return f"{repository_id}::{local_id}"
 
-    def _traverse(self, repository_id, local_id, max_depth, reverse):
+    def _traverse(self, repository_id, local_id, max_depth, reverse, relationship_types=None):
         self._validate_depth(max_depth)
         start_id = self._scoped_id(repository_id, local_id)
 
@@ -30,21 +30,33 @@ class Neo4jGraphReader:
         else:
             path_pattern = f"(start)-[*1..{max_depth}]->(target)"
 
+        relationship_filter = ""
+        if relationship_types:
+            relationship_filter = (
+                "AND all(edge IN relationships(path) "
+                "WHERE type(edge) IN $relationship_types) "
+            )
         query = (
             "MATCH (start:DevTwinEntity {id: $start_id}) "
             f"MATCH path = {path_pattern} "
             "WHERE target:DevTwinEntity "
             "AND target.repository_id = $repository_id "
+            f"{relationship_filter}"
             "AND target.id <> start.id "
             "WITH target, min(length(path)) AS depth "
             "RETURN target.local_id AS id, target.type AS type, "
             "target.name AS name, target.file AS file, depth "
             "ORDER BY depth, id"
         )
+        parameters = {
+            "start_id": start_id,
+            "repository_id": repository_id,
+        }
+        if relationship_types:
+            parameters["relationship_types"] = relationship_types
         records, _, _ = self.driver.execute_query(
             query,
-            start_id=start_id,
-            repository_id=repository_id,
+            **parameters,
             database_=self.database,
         )
         return [record.data() for record in records]
@@ -72,7 +84,16 @@ class Neo4jGraphReader:
     def find_impact(self, repository_id, local_id, max_depth=3):
         """Return reverse-reachable nodes as the graph's impact view."""
 
-        return self.find_dependents(repository_id, local_id, max_depth=max_depth)
+        return self._traverse(
+            repository_id,
+            local_id,
+            max_depth,
+            reverse=True,
+            relationship_types=[
+                "IMPORTS", "CALLS", "USES", "DEPENDS_ON", "EXTENDS",
+                "IMPLEMENTS", "HANDLED_BY", "EXPORTS",
+            ],
+        )
 
     def find_neighbors(self, repository_id, local_id):
         """Return directly connected nodes and the relationships to them."""
@@ -127,7 +148,10 @@ class Neo4jGraphReader:
             "MATCH (node:DevTwinEntity {repository_id: $repository_id}) "
             f"{node_filter}"
             "RETURN node.local_id AS id, node.type AS type, "
-            "node.name AS name, node.file AS file "
+            "node.name AS name, node.file AS file, node.language AS language, "
+            "node.path AS path, node.method AS method, node.handler AS handler, "
+            "node.resolution AS resolution, node.start_line AS start_line, "
+            "node.end_line AS end_line, node.parse_error AS parse_error "
             "ORDER BY node.type, node.name, node.local_id LIMIT $limit"
         )
         node_records, _, _ = self.driver.execute_query(

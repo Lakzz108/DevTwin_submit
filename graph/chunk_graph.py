@@ -29,6 +29,8 @@ def add_chunks_to_graph(graph_data, chunks):
             "symbol_kind": symbol_kind,
             "symbol": symbol,
             "class_name": chunk.get("class_name"),
+            "language": chunk.get("language"),
+            "entity_type": chunk.get("entity_type", symbol_kind),
             "start_line": chunk["start_line"],
             "end_line": chunk["end_line"],
             "content": chunk["content"],
@@ -44,6 +46,7 @@ def add_chunks_to_graph(graph_data, chunks):
         symbol_node_id = _symbol_node_id(chunk)
         if symbol_node_id and symbol_node_id in existing_nodes:
             edges_to_add.append((chunk_id, "DESCRIBES", symbol_node_id))
+            edges_to_add.append((symbol_node_id, "HAS_CHUNK", chunk_id))
 
         for source, relationship, target in edges_to_add:
             edge_key = (source, relationship, target)
@@ -66,6 +69,8 @@ def _symbol_node_id(chunk):
         return None
     if kind == "CLASS":
         return f"class:{file_path}:{symbol}"
+    if kind == "INTERFACE":
+        return f"interface:{file_path}:{symbol}"
     if kind == "METHOD":
         return f"method:{file_path}:{symbol}"
     if kind == "FUNCTION":
