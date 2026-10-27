@@ -30,7 +30,7 @@ class LanguageDetectionTest(unittest.TestCase):
         for file_name, language in expected.items():
             with self.subTest(file_name=file_name):
                 self.assertEqual(detect_language(file_name), language)
-        self.assertIsNone(detect_language("a.cs"))
+        self.assertEqual(detect_language("a.cs"), "csharp")
 
 
 class MultilanguageParsingTest(unittest.TestCase):

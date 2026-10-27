@@ -1,585 +1,283 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const NODE_TYPES = ["PROJECT", "FOLDER", "FILE", "CLASS", "INTERFACE", "FUNCTION", "METHOD", "PACKAGE", "MODULE", "API"];
+const COLORS = { PROJECT: "#3f6540", FOLDER: "#859b62", FILE: "#527b39", CLASS: "#5876ad", INTERFACE: "#728ac0", FUNCTION: "#ba8436", METHOD: "#a15b8e", PACKAGE: "#9d7849", MODULE: "#4b8987", API: "#bd6652", CODE_CHUNK: "#657078" };
+const DEPENDENCY_RELATIONSHIPS = new Set(["IMPORTS", "CALLS", "USES", "DEPENDS_ON", "EXTENDS", "IMPLEMENTS", "HANDLED_BY", "EXPORTS"]);
 
 async function request(path, options = {}) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers: { "Content-Type": "application/json", ...options.headers },
-    });
+    response = await fetch(`${API_BASE}${path}`, { ...options, headers: { "Content-Type": "application/json", ...options.headers } });
   } catch {
     throw new Error("Backend is unavailable. Please start the DevTwin backend.");
   }
-
   let body = null;
-  try {
-    body = await response.json();
-  } catch {
-    // A proxy or server may return an empty/non-JSON error page.
-  }
+  try { body = await response.json(); } catch { /* Handle non-JSON responses below. */ }
   if (!response.ok) {
-    if (response.status === 503) {
-      throw new Error(body?.detail || "Neo4j is unavailable. Start Neo4j and try again.");
-    }
-    if (response.status >= 500) {
-      throw new Error(body?.detail || "DevTwin could not complete this request. Check the repository and Neo4j, then try again.");
-    }
-    throw new Error(body?.detail || `Request failed (${response.status}). Check the repository path and try again.`);
+    if (response.status === 503) throw new Error(body?.detail || "Neo4j is unavailable. Start Neo4j and try again.");
+    if (response.status >= 500) throw new Error(body?.detail || "DevTwin could not complete this request. Check the repository and Neo4j, then try again.");
+    throw new Error(body?.detail || `Request failed (${response.status}). Check the URL and try again.`);
   }
   if (body === null) throw new Error("DevTwin received an unexpected response. Please retry.");
   return body;
 }
 
 function App() {
-  const [repositoryPath, setRepositoryPath] = useState("");
+  const [sourceMode, setSourceMode] = useState("github");
+  const [repositoryInput, setRepositoryInput] = useState("");
   const [repositoryId, setRepositoryId] = useState("");
-  const [question, setQuestion] = useState("");
-  const [file, setFile] = useState("");
-  const [topK, setTopK] = useState(5);
   const [ingestion, setIngestion] = useState(null);
-  const [graphData, setGraphData] = useState(null);
+  const [overview, setOverview] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [fileSummary, setFileSummary] = useState(null);
+  const [question, setQuestion] = useState("");
+  const [topK, setTopK] = useState(5);
   const [queryResult, setQueryResult] = useState(null);
   const [dependencyResult, setDependencyResult] = useState(null);
   const [impactResult, setImpactResult] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [busyMessage, setBusyMessage] = useState("");
   const [error, setError] = useState("");
 
-  async function runAction(action) {
-    setBusy(true);
-    setError("");
-    try {
-      await action();
-    } catch (caught) {
-      setError(caught.message);
-    } finally {
-      setBusy(false);
-    }
+  async function runAction(action, message = "Working…") {
+    setBusy(true); setBusyMessage(message); setError("");
+    try { await action(); } catch (caught) { setError(caught.message); }
+    finally { setBusy(false); setBusyMessage(""); }
   }
 
-  function ingest() {
+  function clearResults() {
+    setRepositoryId(""); setIngestion(null); setOverview(null); setGraph(null);
+    setSelectedNode(null); setFileSummary(null); setQueryResult(null);
+    setDependencyResult(null); setImpactResult(null);
+  }
+
+  async function receiveRepository(result) {
+    const savedGraph = result.graph || await request(`/repositories/${encodeURIComponent(result.repository_id)}/graph?limit=500`);
+    setRepositoryId(result.repository_id); setIngestion(result);
+    setOverview(result.project_understanding || null); setGraph(savedGraph);
+    setSelectedNode(null); setFileSummary(null); setQueryResult(null);
+    setDependencyResult(null); setImpactResult(null);
+  }
+
+  function analyzeRepository() {
+    const value = repositoryInput.trim();
+    if (!value) return;
     return runAction(async () => {
-      const result = await request("/repositories", {
-        method: "POST",
-        body: JSON.stringify({ path: repositoryPath.trim() }),
+      const github = sourceMode === "github";
+      const result = await request(github ? "/repositories/github" : "/repositories", {
+        method: "POST", body: JSON.stringify(github ? { url: value } : { path: value }),
       });
-      const savedGraph = await request(
-        `/repositories/${encodeURIComponent(result.repository_id)}/graph?limit=300`,
-      );
-      setIngestion(result);
-      setRepositoryId(result.repository_id);
-      setGraphData(savedGraph);
-      setQueryResult(null);
-      setDependencyResult(null);
-      setImpactResult(null);
-    });
+      await receiveRepository(result);
+    }, "Fetching, analyzing, and indexing repository…");
   }
 
-  function loadExistingGraph(event) {
-    event?.preventDefault?.();
+  function openSavedRepository() {
+    const value = repositoryInput.trim();
+    if (!value) return;
     return runAction(async () => {
-      const result = await request("/repositories/open", {
-        method: "POST",
-        body: JSON.stringify({ path: repositoryPath.trim() }),
+      const github = sourceMode === "github";
+      const result = await request(github ? "/repositories/github/open" : "/repositories/open", {
+        method: "POST", body: JSON.stringify(github ? { url: value } : { path: value }),
       });
-      const id = result.repository_id;
-      const storedSummary = {
-        repository_id: id,
-        files_analyzed: result.files_analyzed,
-        nodes_processed: result.graph.total_nodes,
-        relationships_processed: result.graph.total_relationships,
-      };
-      setRepositoryId(id);
-      setIngestion(storedSummary);
-      setGraphData(result.graph);
-      setQueryResult(null);
-      setDependencyResult(null);
-      setImpactResult(null);
-    });
-  }
-
-  function resetRepository() {
-    clearSelectedRepository();
-    setRepositoryPath("");
-  }
-
-  function clearSelectedRepository() {
-    setRepositoryId("");
-    setIngestion(null);
-    setGraphData(null);
-    setQueryResult(null);
-    setDependencyResult(null);
-    setImpactResult(null);
-    setQuestion("");
-    setFile("");
-    setError("");
-  }
-
-  function changeRepositoryPath(value) {
-    setRepositoryPath(value);
-    if (repositoryId) clearSelectedRepository();
+      await receiveRepository(result);
+    }, "Fetching repository and opening saved graph…");
   }
 
   function askQuestion(event) {
     event.preventDefault();
+    if (!repositoryId || !question.trim()) return;
     return runAction(async () => {
-      const result = await request(
-        `/repositories/${encodeURIComponent(repositoryId)}/query`,
-        {
-          method: "POST",
-          body: JSON.stringify({ question, top_k: Number(topK) }),
-        },
-      );
-      setQueryResult(result);
-    });
-  }
-
-  function lookupGraph(kind) {
-    return runAction(async () => {
-      const params = new URLSearchParams({ file, max_depth: kind === "impact" ? "3" : "1" });
-      const result = await request(
-        `/repositories/${encodeURIComponent(repositoryId)}/${kind}?${params}`,
-      );
-      if (kind === "impact") setImpactResult(result);
-      else setDependencyResult(result);
-    });
-  }
-
-  function toggleCodeChunks(includeChunks) {
-    return runAction(async () => {
-      const params = new URLSearchParams({
-        limit: "500",
-        include_chunks: String(includeChunks),
+      const result = await request(`/repositories/${encodeURIComponent(repositoryId)}/query`, {
+        method: "POST", body: JSON.stringify({ question: question.trim(), top_k: Number(topK) }),
       });
-      const result = await request(
-        `/repositories/${encodeURIComponent(repositoryId)}/graph?${params}`,
-      );
-      setGraphData(result);
-    });
+      setQueryResult(result);
+    }, "Retrieving semantic matches and graph context…");
   }
 
-  const ready = Boolean(repositoryId);
+  async function selectGraphNode(node) {
+    setSelectedNode(node); setFileSummary(null);
+    setDependencyResult(null); setImpactResult(null);
+    if (node?.type !== "FILE" || !ingestion?.repository_path) return;
+    await runAction(async () => {
+      const summary = await request("/repositories/file-summary", {
+        method: "POST",
+        body: JSON.stringify({ repository_path: ingestion.repository_path, file: node.file || node.name }),
+      });
+      setFileSummary(summary);
+    }, "Reading selected file…");
+  }
 
+  async function lookup(kind) {
+    if (!repositoryId || !fileSummary?.file) return;
+    return runAction(async () => {
+      const params = new URLSearchParams({ file: fileSummary.file, max_depth: kind === "impact" ? "3" : "1" });
+      const result = await request(`/repositories/${encodeURIComponent(repositoryId)}/${kind}?${params}`);
+      if (kind === "impact") setImpactResult(result); else setDependencyResult(result);
+    }, "Exploring graph relationships…");
+  }
+
+  const ready = Boolean(repositoryId && graph);
+  const githubMode = sourceMode === "github";
   return (
     <main className="page-shell">
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="DevTwin home">
-          <span className="brand-mark">D</span>
-          <span>dev<span className="brand-light">twin</span></span>
-        </a>
-        <span className="product-label">REPOSITORY INTELLIGENCE</span>
-        <span className="local-badge"><i /> LOCAL ANALYSIS</span>
-      </header>
-
+      <header className="topbar"><a className="brand" href="#top" aria-label="DevTwin home"><span className="brand-mark">D</span><span>dev<span className="brand-light">twin</span></span></a><span className="product-label">SOFTWARE REPOSITORY UNDERSTANDING</span><span className="local-badge"><i /> LOCAL ANALYSIS</span></header>
       <section className="hero" id="top">
-        <div className="eyebrow"><span /> CODEBASE COMPANION</div>
-        <h1>Understand the<br /><em>whole picture.</em></h1>
-        <p className="hero-copy">
-          Connect code meaning with the relationships between files,
-          symbols, and components.
-        </p>
-
-        <section className="panel repository-panel">
-          <div className="panel-heading">
-            <div className="step-number">01</div>
-            <div>
-              <h2>Connect a repository</h2>
-              <p>Enter a folder path that the DevTwin backend can access.</p>
-            </div>
-          </div>
-          <form
-            className="repository-form"
-            onSubmit={(event) => { event.preventDefault(); ingest(); }}
-          >
-            <label className="sr-only" htmlFor="repository-path">Repository folder path</label>
-            <input
-              id="repository-path"
-              value={repositoryPath}
-              onChange={(event) => changeRepositoryPath(event.target.value)}
-              placeholder="/Users/you/Projects/my-app"
-              disabled={busy}
-              required
-            />
-            <div className="repository-actions">
-              <button className="button button-primary" type="submit" disabled={busy || !repositoryPath.trim()}>
-                {busy ? "Working…" : "Analyze repository"}
-                <span aria-hidden="true">↗</span>
-              </button>
-              <button
-                className="button button-outline"
-                type="button"
-                onClick={loadExistingGraph}
-                disabled={busy || !repositoryPath.trim()}
-                title="Open the saved analysis for this folder without analyzing it again"
-              >
-                Open saved analysis
-              </button>
-            </div>
+        <div className="eyebrow"><span /> CODEBASE COMPANION</div><h1>Understand the<br /><em>whole picture.</em></h1><p className="hero-copy">Explore what a project does, what each file contributes, and how repository components connect.</p>
+        <section className="panel repository-panel"><div className="panel-heading"><div className="step-number">01</div><div><h2>Connect a repository</h2><p>Public GitHub URL is the primary input. Local folders are available for development.</p></div></div>
+          <div className="source-tabs" role="tablist" aria-label="Repository source"><button type="button" className={githubMode ? "source-tab active" : "source-tab"} onClick={() => { setSourceMode("github"); clearResults(); }}>GitHub URL</button><button type="button" className={!githubMode ? "source-tab active" : "source-tab"} onClick={() => { setSourceMode("local"); clearResults(); }}>Local folder</button></div>
+          <form className="repository-form" onSubmit={(event) => { event.preventDefault(); analyzeRepository(); }}>
+            <label className="sr-only" htmlFor="repository-input">{githubMode ? "GitHub repository URL" : "Local repository path"}</label>
+            <input id="repository-input" type={githubMode ? "url" : "text"} value={repositoryInput} onChange={(event) => { setRepositoryInput(event.target.value); if (ready) clearResults(); }} placeholder={githubMode ? "https://github.com/owner/repository" : "/Users/you/Projects/my-app"} disabled={busy} required />
+            <div className="repository-actions"><button className="button button-primary" type="submit" disabled={busy || !repositoryInput.trim()}>{busy ? busyMessage : "Analyze repository"}<span aria-hidden="true">↗</span></button><button className="button button-outline" type="button" onClick={openSavedRepository} disabled={busy || !repositoryInput.trim()}>Open saved analysis</button>{ready && <button className="button button-outline" type="button" onClick={analyzeRepository} disabled={busy}>Re-analyze</button>}</div>
           </form>
-          {ingestion && (
-            <div className="ingestion-summary" role="status">
-              <span className="success-dot" />
-              <strong>Repository ready</strong>
-              {ingestion.files_analyzed != null && <span>{ingestion.files_analyzed} files</span>}
-              {ingestion.chunks_embedded != null && <span>{ingestion.chunks_embedded} code chunks</span>}
-              {ingestion.nodes_processed != null && <span>{ingestion.nodes_processed} graph nodes</span>}
-              {ingestion.relationships_processed != null && <span>{ingestion.relationships_processed} relationships</span>}
-              <button className="clear-repository" type="button" onClick={resetRepository} disabled={busy}>
-                Clear repository
-              </button>
-            </div>
-          )}
+          {ingestion && <div className="ingestion-summary" role="status"><span className="success-dot" /><strong>{ingestion.repository_name || overview?.repository_name || "Repository ready"}</strong><span>{ingestion.files_analyzed} files analyzed</span>{ingestion.source === "github" && <span>Fetched from GitHub</span>}<button className="clear-repository" type="button" onClick={() => { clearResults(); setRepositoryInput(""); }} disabled={busy}>Clear</button></div>}
         </section>
-        {graphData && (
-          <GraphExplorer graph={graphData} onIncludeChunksChange={toggleCodeChunks} />
-        )}
       </section>
-
       {error && <div className="error-banner" role="alert">{error}</div>}
-
-      {ready ? <section className="workspace is-ready">
-        <div className="workspace-header">
-          <div className="step-number">02</div>
-          <div>
-            <h2>Ask your codebase</h2>
-            <p>Semantic matches are expanded with connected knowledge-graph context.</p>
-          </div>
-        </div>
-
-        <div className="workspace-grid">
-          <section className="panel query-panel">
-            <div className="section-kicker">REPOSITORY QUESTION</div>
-            <form onSubmit={askQuestion}>
-              <label className="sr-only" htmlFor="question">Ask a question</label>
-              <textarea
-                id="question"
-                rows="4"
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder="Where is authentication implemented?"
-                disabled={!ready}
-                required
-              />
-              <div className="query-controls">
-                <label className="top-k-label" htmlFor="top-k">Evidence chunks</label>
-                <select id="top-k" value={topK} onChange={(event) => setTopK(event.target.value)} disabled={!ready}>
-                  {[3, 5, 8, 10].map((number) => <option key={number} value={number}>{number}</option>)}
-                </select>
-                <button className="button button-dark" disabled={!ready || busy || !question.trim()}>
-                  Retrieve context <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </form>
-            {queryResult && <QueryResults result={queryResult} />}
-          </section>
-
-          <aside className="panel graph-panel">
-            <div className="section-kicker">DEPENDENCY EXPLORER</div>
-            <label htmlFor="file-path">Repository-relative file</label>
-            <input
-              id="file-path"
-              value={file}
-              onChange={(event) => setFile(event.target.value)}
-              placeholder="src/auth/login.py"
-              disabled={!ready}
-            />
-            <div className="graph-actions">
-              <button className="button button-outline" onClick={() => lookupGraph("dependencies")} disabled={!ready || busy || !file.trim()}>
-                Dependencies
-              </button>
-              <button className="button button-outline" onClick={() => lookupGraph("impact")} disabled={!ready || busy || !file.trim()}>
-                Change impact
-              </button>
-            </div>
-            {dependencyResult && (
-              <NodeList title="Dependencies" items={dependencyResult.dependencies} empty="No outgoing dependencies found." />
-            )}
-            {impactResult && (
-              <NodeList title="Potentially affected" items={impactResult.impacted_components} empty="No incoming dependents found." />
-            )}
-            {!dependencyResult && !impactResult && (
-              <p className="helper-copy">Enter a file and explore its connected components.</p>
-            )}
-          </aside>
-        </div>
-      </section> : (
-        <section className="empty-workspace" aria-live="polite">
-          <span className="step-number">02</span>
-          <div>
-            <h2>Your repository workspace will appear here</h2>
-            <p>Select a folder and analyze it to explore its structure and retrieve related code.</p>
-          </div>
+      {!ready && <section className="empty-workspace" aria-live="polite"><span className="step-number">02</span><div><h2>No repository selected</h2><p>Enter a public GitHub URL to begin. DevTwin fetches and analyzes it only after you select Analyze repository.</p></div></section>}
+      {ready && <>
+        {overview && <ProjectOverview overview={overview} onReanalyze={analyzeRepository} busy={busy} />}
+        <GraphExplorer graph={graph} selectedNodeId={selectedNode?.id} onSelectNode={selectGraphNode} />
+        <SelectedComponent node={selectedNode} summary={fileSummary} busy={busy} onDependencies={() => lookup("dependencies")} onImpact={() => lookup("impact")} dependencyResult={dependencyResult} impactResult={impactResult} />
+        <section className="workspace is-ready"><div className="workspace-header"><div className="step-number">04</div><div><h2>Ask DevTwin</h2><p>Retrieve code evidence and expand it with connected knowledge-graph context.</p></div></div>
+          <section className="panel query-panel"><form onSubmit={askQuestion}><label className="sr-only" htmlFor="question">Ask about this repository</label><textarea id="question" rows="3" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Find code related to authentication or user login" disabled={!ready || busy} required />
+            <div className="example-prompts"><span>Try:</span>{["Find code related to authentication", "Find code related to database connections", "Where is login implemented?"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)} disabled={busy}>{prompt}</button>)}</div>
+            <div className="query-controls"><label className="top-k-label" htmlFor="top-k">Evidence chunks</label><select id="top-k" value={topK} onChange={(event) => setTopK(event.target.value)} disabled={!ready || busy}>{[3, 5, 8, 10].map((number) => <option key={number} value={number}>{number}</option>)}</select><button className="button button-dark" disabled={!ready || busy || !question.trim()}>Retrieve evidence <span aria-hidden="true">→</span></button></div>
+          </form>{queryResult && <QueryResults result={queryResult} />}</section>
         </section>
-      )}
-
-      <footer className="footer">
-        <span>DevTwin <span className="footer-muted">· AI-powered software repository understanding</span></span>
-        <span>LOCAL EMBEDDINGS · NEO4J KNOWLEDGE GRAPH</span>
-      </footer>
+      </>}
+      <footer className="footer"><span>DevTwin <span className="footer-muted">· repository understanding prototype</span></span><span>LOCAL EMBEDDINGS · NEO4J KNOWLEDGE GRAPH · GRAPH CONTEXT</span></footer>
     </main>
   );
 }
+
+function ProjectOverview({ overview, onReanalyze, busy }) {
+  const stats = overview.statistics || {};
+  const statItems = [["Files", stats.files], ["Classes", stats.classes], ["Interfaces", stats.interfaces], ["Functions", stats.functions], ["Methods", stats.methods], ["API endpoints", stats.apis], ["Graph nodes", stats.graph_nodes], ["Relationships", stats.relationships], ["Calls", stats.calls], ["Code chunks", stats.code_chunks]];
+  return <section className="overview-section"><div className="overview-heading"><div><div className="section-kicker">PROJECT UNDERSTANDING</div><h2>{overview.repository_name}</h2><p>Repository-level facts with evidence sources shown.</p></div><button className="button button-outline" type="button" onClick={onReanalyze} disabled={busy}>Re-analyze repository</button></div>
+    <div className="overview-grid"><article className="panel overview-card overview-purpose"><div className="section-kicker">PROJECT PURPOSE</div><p>{overview.purpose}</p><small>{overview.purpose_evidence ? `Source: ${overview.purpose_evidence}` : "No purpose statement found in README or project metadata"}</small></article><article className="panel overview-card"><div className="section-kicker">HOW IT WORKS · STATIC VIEW</div><p>{overview.how_it_works}</p><small>{overview.architecture_note}</small><small className="scope-note">{overview.analysis_scope}</small></article></div>
+    <div className="stats-grid">{statItems.map(([label, value]) => <div className="panel stat-card" key={label}><strong>{value ?? 0}</strong><span>{label}</span></div>)}</div>
+    <div className="overview-grid overview-lists"><article className="panel overview-card"><div className="section-kicker">IMPORT ANALYSIS · STATIC SOURCE IMPORTS</div><div className="import-count-grid">{[["Total", overview.import_analysis?.total], ["Internal", overview.import_analysis?.internal], ["External", overview.import_analysis?.external], ["Unresolved", overview.import_analysis?.unresolved]].map(([label, value]) => <span key={label}><strong>{value ?? 0}</strong>{label}</span>)}</div><p className="import-explainer">Internal imports resolve to repository files or packages. External packages are supported by manifests or language rules. Unresolved imports need more project context.</p></article><article className="panel overview-card"><div className="section-kicker">LANGUAGES & DECLARED TECHNOLOGIES</div><div className="tag-list">{(overview.languages || []).map((item) => <span className="info-tag" key={item.name}>{item.name} · {item.files}</span>)}{(overview.technologies || []).map((item) => <span className="info-tag tech-tag" key={item}>{item}</span>)}</div>{!overview.languages?.length && !overview.technologies?.length && <p className="empty-state">No language or package evidence found.</p>}</article>
+      <article className="panel overview-card"><div className="section-kicker">FOLDERS & ENTRY POINT EVIDENCE</div>{overview.folders?.length ? <div className="compact-list">{overview.folders.slice(0, 8).map((folder) => <span key={folder.name}><code>{folder.name}/</code><small>{folder.source_files} scanned source files</small></span>)}</div> : <p className="empty-state">No nested source folders detected.</p>}{overview.entry_points?.length > 0 && <div className="compact-list entry-list">{overview.entry_points.slice(0, 8).map((entry, index) => <span key={`${entry.file}-${entry.name}-${index}`}><code>{entry.file} · {entry.name}</code><small>{entry.evidence}</small></span>)}</div>}</article></div>
+    {overview.documented_components?.length > 0 && <article className="panel overview-card"><div className="section-kicker">COMPONENT DOCUMENTATION FOUND IN SOURCE</div><div className="documented-components">{overview.documented_components.slice(0, 8).map((component, index) => <div key={`${component.file}-${component.name}-${index}`}><code>{component.file} · {component.name}</code><p>{component.purpose}</p></div>)}</div></article>}
+    {overview.documentation_evidence?.length > 0 && <article className="panel overview-card"><div className="section-kicker">DOCUMENTATION EXCERPTS</div><div className="documented-components">{overview.documentation_evidence.map((item) => <div key={item.file}><code>{item.file}</code><p>{item.excerpt}</p></div>)}</div></article>}
+      {overview.most_connected_files?.length > 0 && <article className="panel overview-card"><div className="section-kicker">MOST CONNECTED FILES · STATIC IMPORT EDGES</div><div className="tag-list">{overview.most_connected_files.slice(0, 6).map((item) => <span className="info-tag" key={item.file}>{item.file} · {item.connections}</span>)}</div></article>}
+      <article className="panel overview-card architecture-card"><div className="section-kicker">STATIC IMPORT ANALYSIS</div><p>Imports come from parsed source statements. Calls and API links are shown in the knowledge graph; runtime control flow is not inferred.</p>{overview.architecture_edges?.length ? <details className="overview-disclosure"><summary>Show {overview.architecture_edges.length} sample import edges · {overview.import_analysis?.internal || 0} internal resolved</summary><div className="architecture-links">{overview.architecture_edges.map((edge, index) => <span key={`${edge.source}-${edge.target}-${index}`}><code>{edge.source}</code><b>imports</b><code>{edge.target}</code></span>)}</div></details> : overview.import_analysis?.total ? <p className="empty-state">{overview.import_analysis.total} imports were detected, but none resolved to a displayed graph edge. Check unresolved imports and graph storage.</p> : <p className="empty-state">No source imports were detected in this repository.</p>}</article>
+  </section>;
+}
+
+function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
+  const [mode, setMode] = useState("overview");
+  const [typeFilter, setTypeFilter] = useState("ALL");
+  const [relationshipFilter, setRelationshipFilter] = useState("ALL");
+  const [search, setSearch] = useState("");
+  const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  const drag = useRef(null);
+  const nodesById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+  const relationshipTypes = useMemo(() => [...new Set(graph.relationships.map((edge) => edge.relationship))].sort(), [graph.relationships]);
+  let nodes = graph.nodes.filter((node) => node.type !== "CODE_CHUNK");
+  let edges = graph.relationships;
+  if (mode === "overview") {
+    nodes = nodes.filter((node) => ["PROJECT", "FOLDER", "FILE"].includes(node.type));
+    edges = edges.filter((edge) => edge.relationship === "CONTAINS");
+  } else if (selectedNodeId) {
+    if (mode === "neighborhood") edges = edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId);
+    if (mode === "dependencies" || mode === "impact") {
+      const discovered = new Set([selectedNodeId]);
+      const traversalEdges = new Map();
+      let frontier = new Set([selectedNodeId]);
+      for (let depth = 0; depth < 3 && frontier.size; depth += 1) {
+        const next = new Set();
+        graph.relationships.forEach((edge) => {
+          if (!DEPENDENCY_RELATIONSHIPS.has(edge.relationship)) return;
+          const matches = mode === "dependencies" ? frontier.has(edge.source) : frontier.has(edge.target);
+          if (!matches) return;
+          const related = mode === "dependencies" ? edge.target : edge.source;
+          if (related === selectedNodeId || related.startsWith("chunk:")) return;
+          traversalEdges.set(`${edge.source}|${edge.relationship}|${edge.target}`, edge);
+          if (!discovered.has(related)) { discovered.add(related); next.add(related); }
+        });
+        frontier = next;
+      }
+      nodes = nodes.filter((node) => discovered.has(node.id));
+      edges = [...traversalEdges.values()];
+    }
+    const visibleIds = new Set([selectedNodeId]);
+    edges.forEach((edge) => { visibleIds.add(edge.source); visibleIds.add(edge.target); });
+    nodes = nodes.filter((node) => visibleIds.has(node.id));
+  } else {
+    nodes = [];
+    edges = [];
+  }
+  const query = search.trim().toLowerCase();
+  if (query) nodes = nodes.filter((node) => `${node.name} ${node.file || ""} ${node.type}`.toLowerCase().includes(query));
+  if (typeFilter !== "ALL") nodes = nodes.filter((node) => node.type === typeFilter);
+  const matchCount = nodes.length;
+  nodes = nodes.slice(0, mode === "overview" ? 100 : 60);
+  const ids = new Set(nodes.map((node) => node.id));
+  edges = edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target) && (relationshipFilter === "ALL" || edge.relationship === relationshipFilter)).slice(0, 120);
+  const coords = new Map();
+  nodes.forEach((node, index) => {
+    if (mode === "overview") {
+      const level = node.type === "PROJECT" ? 0 : node.type === "FOLDER" ? 1 : 2;
+      const sameLevel = nodes.filter((candidate) => (candidate.type === "PROJECT" ? 0 : candidate.type === "FOLDER" ? 1 : 2) === level);
+      const position = sameLevel.findIndex((candidate) => candidate.id === node.id);
+      coords.set(node.id, { x: 75 + level * 320, y: 50 + position * 54 });
+    } else {
+      const angle = 2 * Math.PI * index / Math.max(nodes.length, 1) - Math.PI / 2;
+      const radius = nodes.length < 2 ? 0 : nodes.length <= 8 ? 125 : 195;
+      const center = node.id === selectedNodeId;
+      coords.set(node.id, center ? { x: 400, y: 250 } : { x: 400 + Math.cos(angle) * radius, y: 250 + Math.sin(angle) * radius });
+    }
+  });
+  const graphHeight = mode === "overview"
+    ? Math.max(500, ...Array.from(coords.values(), (point) => point.y + 80))
+    : 500;
+  const selected = nodesById.get(selectedNodeId);
+  function pointerDown(event) {
+    if (event.target.closest?.(".graph-node")) return;
+    drag.current = { x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function pointerMove(event) {
+    if (drag.current) setView((old) => ({ ...old, x: drag.current.viewX + event.clientX - drag.current.x, y: drag.current.viewY + event.clientY - drag.current.y }));
+  }
+  return <section className="panel repository-graph" aria-label="Interactive repository relationship graph"><div className="graph-title-row"><div><div className="section-kicker">KNOWLEDGE GRAPH</div><h2>Explore repository relationships</h2><p>Choose a focused view, then drag to pan, zoom, and select a component.</p></div><div className="graph-total-badges"><span><strong>{graph.total_nodes}</strong> nodes</span><span><strong>{graph.total_relationships}</strong> relationships</span></div></div>
+    <div className="source-tabs graph-view-tabs" role="tablist" aria-label="Graph view"><button type="button" className={mode === "overview" ? "source-tab active" : "source-tab"} onClick={() => { setMode("overview"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }}>Project structure</button><button type="button" className={mode === "neighborhood" ? "source-tab active" : "source-tab"} onClick={() => { setMode("neighborhood"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Component links</button><button type="button" className={mode === "dependencies" ? "source-tab active" : "source-tab"} onClick={() => { setMode("dependencies"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Depends on · 3 hops</button><button type="button" className={mode === "impact" ? "source-tab active" : "source-tab"} onClick={() => { setMode("impact"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Used by / impact · 3 hops</button></div>
+    <div className="graph-controls"><label htmlFor="node-type-filter">Node type</label><select id="node-type-filter" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="ALL">All visible</option>{(mode === "overview" ? ["PROJECT", "FOLDER", "FILE"] : NODE_TYPES.filter((type) => type !== "CODE_CHUNK")).map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><label htmlFor="relationship-filter">Relationship</label><select id="relationship-filter" value={relationshipFilter} onChange={(event) => setRelationshipFilter(event.target.value)}><option value="ALL">All visible</option>{(mode === "overview" ? ["CONTAINS"] : relationshipTypes).map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><input aria-label="Search graph nodes" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search files and symbols" /><div className="zoom-actions"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(2.2, v.scale + 0.2) }))} aria-label="Zoom in">+</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.55, v.scale - 0.2) }))} aria-label="Zoom out">−</button><button type="button" onClick={() => setView({ x: 0, y: 0, scale: 1 })}>Reset view</button></div></div>
+    <div className="graph-legend">{NODE_TYPES.map((type) => <span key={type}><i style={{ backgroundColor: COLORS[type] }} />{type.toLowerCase()}</span>)}</div>
+    <div className="svg-graph-wrap">{nodes.length === 0 ? <p className="empty-state graph-empty">{selectedNodeId ? "No relationships match this view and filter." : "Select a node to see its links, dependencies, or potential impact."}</p> : <svg className="knowledge-svg" viewBox={`0 0 800 ${graphHeight}`} role="img" aria-label="Node-link view of repository files and relationships" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+      <defs><marker id="edge-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a6b29e" /></marker></defs><g transform={`translate(${view.x} ${view.y}) translate(400 250) scale(${view.scale}) translate(-400 -250)`}>
+        {edges.map((edge, index) => { const from = coords.get(edge.source); const to = coords.get(edge.target); if (!from || !to) return null; const mx = (from.x + to.x) / 2; const my = (from.y + to.y) / 2; return <g key={`${edge.source}-${edge.relationship}-${edge.target}-${index}`}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className="graph-edge" markerEnd="url(#edge-arrow)" />{edges.length < 35 && <text x={mx} y={my - 4} className="graph-edge-label">{edge.relationship.replaceAll("_", " ")}</text>}</g>; })}
+        {nodes.map((node) => { const point = coords.get(node.id); const label = node.name || node.file || node.id; return <g key={node.id} className={`graph-node ${selectedNodeId === node.id ? "selected" : ""}`} role="button" tabIndex="0" aria-label={`${node.type}: ${label}`} onClick={() => onSelectNode(node)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelectNode(node); }}><title>{node.type}: {label}</title><circle cx={point.x} cy={point.y} r={selectedNodeId === node.id ? 22 : 18} fill={COLORS[node.type] || COLORS.MODULE} /><text x={point.x} y={point.y + 3} className="graph-node-type">{node.type === "FUNCTION" ? "FN" : node.type === "METHOD" ? "M" : node.type.slice(0, 3)}</text><text x={point.x} y={point.y + (mode === "overview" ? 27 : 34)} className="graph-node-label">{label.length > 22 ? `${label.slice(0, 20)}…` : label}</text></g>; })}
+      </g></svg>}</div>
+    <div className="graph-footer"><span>{nodes.length} shown{matchCount > nodes.length ? ` of ${matchCount} matching nodes` : ""}{graph.truncated ? " · graph result is truncated" : ""}</span>{selected && <button type="button" className="clear-selection" onClick={() => onSelectNode(null)}>Clear selection</button>}</div>
+  </section>;
+}
+
+function SelectedComponent({ node, summary, busy, onDependencies, onImpact, dependencyResult, impactResult }) {
+  if (!node) return <section className="panel selected-component"><div className="section-kicker">SELECTED COMPONENT</div><p className="empty-state">Select a node in the graph to inspect source facts and relationships.</p></section>;
+  const displayName = summary?.file || node.file || node.name;
+  return <section className="panel selected-component"><div className="component-heading"><div><div className="section-kicker">SELECTED COMPONENT</div><h2>{displayName}</h2></div><span className={`node-type node-type-${node.type.toLowerCase()}`}>{node.type}</span></div>
+    {node.type === "FILE" ? busy && !summary ? <p className="empty-state">Reading selected file…</p> : summary && <><p className="component-purpose">{summary.purpose}</p><small className="evidence-note">{summary.explanation_basis}</small>{summary.documented_components?.length > 0 && <div className="documented-components">{summary.documented_components.map((component) => <div key={`${component.kind}-${component.name}`}><code>{component.kind} · {component.name}</code><p>{component.purpose}</p></div>)}</div>}<div className="component-facts"><FactList title="Language" values={[summary.language]} /><FactList title="Classes" values={summary.classes} /><FactList title="Interfaces" values={summary.interfaces} /><FactList title="Functions" values={summary.functions} /><FactList title="Methods" values={summary.methods} /><FactList title="Imports / dependencies" values={summary.dependencies} /><FactList title="Used by" values={summary.used_by} /><FactList title="Exports" values={summary.exports} /><FactList title="API endpoints" values={(summary.api_endpoints || []).map((item) => `${item.method} ${item.path}${item.handler ? ` → ${item.handler}` : ""}`)} /><FactList title="Resolved static call links" values={summary.calls} /></div><div className="graph-actions"><button className="button button-outline" type="button" onClick={onDependencies} disabled={busy}>Dependencies</button><button className="button button-outline" type="button" onClick={onImpact} disabled={busy}>Potential impact</button></div>{dependencyResult && <NodeList title="Dependencies" items={dependencyResult.dependencies} empty="No outgoing dependencies found." />}{impactResult && <NodeList title="Potentially affected" items={impactResult.impacted_components} empty="No incoming dependents found." />}</> : <><p className="component-purpose">This node was extracted as a <strong>{node.type.toLowerCase()}</strong> named <strong>{node.name}</strong>. Its source path and direct relationships are available in the graph views.</p><div className="component-facts"><FactList title="Source file" values={node.file ? [node.file] : []} /><FactList title="Folder or package path" values={node.path ? [node.path] : []} /><FactList title="Language" values={node.language ? [node.language] : []} /></div></>}
+  </section>;
+}
+
+function FactList({ title, values = [] }) { return <div className="fact-list"><h3>{title}</h3>{values.length ? <ul>{values.map((value, index) => <li key={`${value}-${index}`}><code>{value}</code></li>)}</ul> : <p>None extracted</p>}</div>; }
 
 function QueryResults({ result }) {
   const chunks = result.semantic_chunks || [];
   const graph = result.graph_context || { nodes: [], relationships: [] };
   const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const friendlyName = (id) => {
-    const node = nodesById.get(id);
-    if (!node) return id.split(":").slice(1).join(":");
-    return node.file || node.name || id.split(":").slice(1).join(":");
-  };
-
-  return (
-    <div className="results" aria-live="polite">
-      <div className="results-heading">
-        <div>
-          <div className="section-kicker">SEMANTIC MATCHES</div>
-          <h3>{chunks.length} relevant code {chunks.length === 1 ? "chunk" : "chunks"}</h3>
-        </div>
-        <span className="graph-count">{graph.nodes.length} graph nodes</span>
-      </div>
-      {chunks.length === 0 ? (
-        <p className="empty-state">No matching code chunks were found for this question.</p>
-      ) : chunks.map((chunk) => (
-        <article className="evidence-card" key={chunk.id}>
-          <div className="evidence-meta">
-            <code>{chunk.file}</code>
-            <span>{chunk.kind || "CODE"}{chunk.symbol ? ` · ${chunk.symbol}` : ""}</span>
-            <span>{Math.round(chunk.score * 100)}% match</span>
-          </div>
-          <pre>{chunk.content}</pre>
-        </article>
-      ))}
-      <div className="graph-context">
-        <div className="section-kicker">GRAPH CONTEXT</div>
-        {graph.relationships.length === 0 ? (
-          <p className="empty-state">No direct graph relationships for these matches.</p>
-        ) : graph.relationships.map((edge, index) => (
-          <div className="edge-row" key={`${edge.source}-${edge.relationship}-${edge.target}-${index}`}>
-            <code>{friendlyName(edge.source)}</code><span>{edge.relationship.replaceAll("_", " ")}</span><code>{friendlyName(edge.target)}</code>
-          </div>
-        ))}
-      </div>
-      <p className="retrieval-note">This view shows retrieved evidence and graph context. A generated natural-language answer is not connected yet.</p>
-    </div>
-  );
+  const friendlyName = (id) => { const node = nodesById.get(id); return node?.file || node?.name || id.split(":").slice(1).join(":"); };
+  return <div className="results" aria-live="polite"><div className="answer-honesty"><div className="section-kicker">REPOSITORY EVIDENCE</div><p>No generative LLM is connected. These are retrieved source matches and graph context, not an AI-written answer.</p></div><div className="results-heading"><div><div className="section-kicker">SEMANTIC MATCHES</div><h3>{chunks.length} relevant code {chunks.length === 1 ? "chunk" : "chunks"}</h3></div><span className="graph-count">{graph.nodes.length} graph nodes</span></div>
+    {chunks.length === 0 ? <p className="empty-state">No matching code chunks were found for this question.</p> : chunks.map((chunk) => <article className="evidence-card" key={chunk.id}><div className="evidence-meta"><code>{chunk.file}</code><span>{chunk.kind || "CODE"}{chunk.symbol ? ` · ${chunk.symbol}` : ""}</span><span>{Math.round(chunk.score * 100)}% match</span></div><pre>{chunk.content}</pre></article>)}
+    <div className="graph-context"><div className="section-kicker">GRAPH CONTEXT</div>{graph.relationships.length === 0 ? <p className="empty-state">No direct graph relationships for these matches.</p> : graph.relationships.map((edge, index) => <div className="edge-row" key={`${edge.source}-${edge.relationship}-${edge.target}-${index}`}><code>{friendlyName(edge.source)}</code><span>{edge.relationship.replaceAll("_", " ")}</span><code>{friendlyName(edge.target)}</code></div>)}</div>
+  </div>;
 }
 
-function NodeList({ title, items, empty }) {
-  return (
-    <div className="node-list">
-      <div className="section-kicker">{title.toUpperCase()}</div>
-      {items.length === 0 ? <p className="empty-state">{empty}</p> : items.map((item) => (
-        <div className="node-row" key={item.id}>
-          <span className={`node-type node-type-${String(item.type || "unknown").toLowerCase()}`}>{item.type}</span>
-          <code>{item.file || item.name || item.id}</code>
-          {item.depth && <span className="node-depth">depth {item.depth}</span>}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function GraphExplorer({ graph, onIncludeChunksChange }) {
-  const [selectedFileId, setSelectedFileId] = useState("");
-  const [search, setSearch] = useState("");
-  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const files = graph.nodes
-    .filter((node) => node.type === "FILE")
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const normalizedSearch = search.trim().toLowerCase();
-  const visibleFiles = files.filter((file) => {
-    if (selectedFileId && file.id !== selectedFileId) return false;
-    if (!normalizedSearch) return true;
-    const relatedSymbols = graph.relationships
-      .filter((edge) => edge.source === file.id && edge.relationship === "DEFINES")
-      .map((edge) => nodesById.get(edge.target)?.name || "");
-    const relatedImports = graph.relationships
-      .filter((edge) => edge.source === file.id && edge.relationship === "IMPORTS")
-      .map((edge) => nodesById.get(edge.target)?.name || "");
-    return [file.name, ...relatedSymbols, ...relatedImports]
-      .some((value) => value.toLowerCase().includes(normalizedSearch));
-  });
-
-  function labelFor(id) {
-    const node = nodesById.get(id);
-    if (!node) return id;
-    if (node.type === "FILE") return node.file || node.name;
-    if (node.type === "MODULE") return node.name;
-    return node.name || node.symbol || node.id;
-  }
-
-  function edgesFrom(sourceId, relationship) {
-    return graph.relationships.filter(
-      (edge) => edge.source === sourceId && edge.relationship === relationship,
-    );
-  }
-
-  function RelationshipGroup({ title, edges }) {
-    if (!edges.length) return null;
-    return (
-      <div className="file-relation-group">
-        <div className="file-relation-title">{title}</div>
-        <ul>
-          {edges.map((edge) => (
-            <li key={`${edge.source}-${edge.relationship}-${edge.target}`}>
-              <span className="relation-arrow">{edge.relationship} →</span>
-              <span className="relation-target">
-                {labelFor(edge.target)}
-                {nodesById.get(edge.target)?.type && (
-                  <small>{nodesById.get(edge.target).type.toLowerCase()}</small>
-                )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
-  return (
-    <section className="panel repository-graph" aria-label="Repository graph">
-      <div className="graph-title-row">
-        <div>
-          <div className="section-kicker">REPOSITORY MAP</div>
-          <h2>How the code is connected</h2>
-          <p>Relationships are grouped by file so you can follow them without crossing lines.</p>
-        </div>
-        <div className="graph-total-badges">
-          <span><strong>{graph.total_nodes}</strong> nodes</span>
-          <span><strong>{graph.total_relationships}</strong> relationships</span>
-        </div>
-      </div>
-
-      {graph.truncated && (
-        <p className="graph-truncated" role="status">
-          This saved graph contains more relationships than are shown here. Increase the graph result limit from the API to view all of them.
-        </p>
-      )}
-
-      <div className="graph-controls">
-        <label htmlFor="graph-file-select">Focus on one file</label>
-        <select
-          id="graph-file-select"
-          value={selectedFileId}
-          onChange={(event) => setSelectedFileId(event.target.value)}
-        >
-          <option value="">All files</option>
-          {files.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
-        </select>
-        <label className="sr-only" htmlFor="graph-search">Search files, symbols, or imports</label>
-        <input
-          id="graph-search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search files, symbols, or imports"
-        />
-        <label className="chunk-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(graph.include_chunks)}
-            onChange={(event) => onIncludeChunksChange(event.target.checked)}
-          />
-          Show code chunks
-        </label>
-      </div>
-
-      {visibleFiles.length === 0 ? (
-        <p className="empty-state">No files match that search.</p>
-      ) : (
-        <div className="file-graph-list">
-          {visibleFiles.map((file, index) => {
-            const imports = edgesFrom(file.id, "IMPORTS");
-            const definitions = edgesFrom(file.id, "DEFINES");
-            const definedIds = definitions.map((edge) => edge.target);
-            const methods = graph.relationships.filter(
-              (edge) => edge.relationship === "HAS_METHOD" && definedIds.includes(edge.source),
-            );
-            const chunks = edgesFrom(file.id, "CONTAINS_CHUNK");
-
-            return (
-              <details
-                className="file-graph-card"
-                key={file.id}
-                open={selectedFileId === file.id || (!selectedFileId && index === 0)}
-              >
-                <summary>
-                  <span className="file-summary-main">
-                    <span className="file-node-icon">FILE</span>
-                    <code>{file.name}</code>
-                  </span>
-                  <span className="file-summary-counts">
-                    <span>{imports.length} imports</span>
-                    <span>{definitions.length} symbols</span>
-                    <span>{methods.length} methods</span>
-                    {graph.include_chunks && <span>{chunks.length} chunks</span>}
-                  </span>
-                </summary>
-                <div className="file-graph-content">
-                  <RelationshipGroup
-                    title="IMPORTS"
-                    edges={imports}
-                  />
-                  <div className="file-relation-group">
-                    <div className="file-relation-title">DEFINES</div>
-                    {definitions.length === 0 ? (
-                      <p className="empty-state">No classes or functions were extracted from this file.</p>
-                    ) : (
-                      <ul className="defined-symbol-list">
-                        {definitions.map((edge) => {
-                          const symbol = nodesById.get(edge.target);
-                          const symbolMethods = methods.filter((method) => method.source === edge.target);
-                          const describedChunks = graph.relationships.filter(
-                            (relationship) => relationship.relationship === "DESCRIBES"
-                              && relationship.target === edge.target,
-                          );
-                          return (
-                            <li key={edge.target}>
-                              <div className="defined-symbol">
-                                <span className={`node-type node-type-${String(symbol?.type || "symbol").toLowerCase()}`}>{symbol?.type || "SYMBOL"}</span>
-                                <strong>{labelFor(edge.target)}</strong>
-                              </div>
-                              {symbolMethods.length > 0 && (
-                                <div className="method-branch">
-                                  <span>HAS_METHOD</span>
-                                  {symbolMethods.map((method) => (
-                                    <code key={method.target}>{labelFor(method.target)}</code>
-                                  ))}
-                                </div>
-                              )}
-                              {graph.include_chunks && describedChunks.length > 0 && (
-                                <div className="method-branch chunk-branch">
-                                  <span>DESCRIBED BY</span>
-                                  {describedChunks.map((chunkEdge) => (
-                                    <code key={chunkEdge.source}>{labelFor(chunkEdge.source)}</code>
-                                  ))}
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                  {graph.include_chunks && (
-                    <RelationshipGroup
-                      title="CONTAINS CODE CHUNKS"
-                      edges={chunks}
-                    />
-                  )}
-                </div>
-              </details>
-            );
-          })}
-        </div>
-      )}
-      <p className="graph-explainer">
-        Each row is a FILE node. Expand it to follow IMPORTS, DEFINES, and HAS_METHOD relationships. Imported modules are shown even when they are outside this repository.
-      </p>
-    </section>
-  );
-}
+function NodeList({ title, items, empty }) { return <div className="node-list"><div className="section-kicker">{title.toUpperCase()}</div>{items.length === 0 ? <p className="empty-state">{empty}</p> : items.map((item) => <div className="node-row" key={item.id}><span className={`node-type node-type-${String(item.type || "unknown").toLowerCase()}`}>{item.type}</span><code>{item.file || item.name || item.id}</code>{item.depth && <span className="node-depth">depth {item.depth}</span>}</div>)}</div>; }
 
 export default App;

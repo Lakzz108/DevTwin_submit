@@ -1,18 +1,9 @@
 from pathlib import Path
 
+from language_detector import LANGUAGE_BY_EXTENSION
 
-SUPPORTED_EXTENSIONS = {
-    ".py",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".java",
-    ".cpp",
-    ".c",
-    ".h",
-    ".hpp",
-}
+
+SUPPORTED_EXTENSIONS = set(LANGUAGE_BY_EXTENSION)
 
 
 def scan_repository(repo_path: str):

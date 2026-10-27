@@ -6,7 +6,10 @@ from collections import defaultdict
 from pathlib import Path
 
 
-NODE_TYPES = {"FILE", "CLASS", "FUNCTION", "METHOD", "MODULE", "CODE_CHUNK"}
+NODE_TYPES = {
+    "PROJECT", "FOLDER", "FILE", "CLASS", "INTERFACE", "FUNCTION",
+    "METHOD", "PACKAGE", "MODULE", "API", "CODE_CHUNK",
+}
 RELATIONSHIP_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 CONSTRAINT_QUERY = (
     "CREATE CONSTRAINT devtwin_entity_id IF NOT EXISTS "
@@ -114,11 +117,18 @@ class Neo4jGraphWriter:
                 properties["file"] = node["file"]
             for property_name in (
                 "symbol_kind",
+                "entity_type",
                 "symbol",
                 "class_name",
                 "start_line",
                 "end_line",
                 "content",
+                "language",
+                "parse_error",
+                "path",
+                "method",
+                "handler",
+                "resolution",
             ):
                 if node.get(property_name) is not None:
                     properties[property_name] = node[property_name]
@@ -148,6 +158,14 @@ class Neo4jGraphWriter:
 
     @staticmethod
     def _write_transaction(tx, nodes, relationships, repository_id):
+        # Replace this repository's prior snapshot so deleted source files and
+        # stale relationships do not remain after the user re-analyzes it.
+        tx.run(
+            "MATCH (entity:DevTwinEntity {repository_id: $repository_id}) "
+            "DETACH DELETE entity",
+            repository_id=repository_id,
+        )
+
         nodes_by_type = defaultdict(list)
         for node in nodes:
             nodes_by_type[node["label"]].append(node["properties"])

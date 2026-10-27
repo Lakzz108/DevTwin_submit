@@ -66,7 +66,11 @@ class Neo4jGraphWriterTest(unittest.TestCase):
             result,
         )
         self.assertEqual(1, len(self.driver.queries))
-        self.assertIn("entity:FILE", self.driver.transaction.calls[0][0])
+        self.assertIn("DETACH DELETE", self.driver.transaction.calls[0][0])
+        self.assertIn(
+            "entity:FILE",
+            next(query for query, _ in self.driver.transaction.calls if "entity:FILE" in query),
+        )
         relation_query, relation_parameters = self.driver.transaction.calls[-1]
         self.assertIn("[edge:IMPORTS]", relation_query)
         self.assertEqual(

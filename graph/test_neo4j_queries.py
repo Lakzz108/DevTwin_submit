@@ -81,6 +81,11 @@ class Neo4jGraphReaderTest(unittest.TestCase):
         reader.find_dependents("repo-1", "file:b.py")
         self.assertIn("(target)-[*1..1]->(start)", driver.calls[1][0])
 
+        reader.find_impact("repo-1", "file:b.py", max_depth=3)
+        impact_query, impact_parameters = driver.calls[2]
+        self.assertIn("all(edge IN relationships(path)", impact_query)
+        self.assertIn("IMPORTS", impact_parameters["relationship_types"])
+
     def test_invalid_depth_is_rejected_before_query(self):
         driver = FakeDriver()
         reader = Neo4jGraphReader(driver)

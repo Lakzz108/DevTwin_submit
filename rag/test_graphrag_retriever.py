@@ -24,14 +24,24 @@ class FakeVectorStore:
 class FakeGraphReader:
     def find_neighbors(self, repository_id, local_id):
         self.arguments = (repository_id, local_id)
+        if local_id.startswith("chunk:"):
+            return [{
+                "id": "function:src/auth.py:login",
+                "type": "FUNCTION",
+                "name": "login",
+                "file": "src/auth.py",
+                "source": local_id,
+                "relationship": "DESCRIBES",
+                "target": "function:src/auth.py:login",
+            }]
         return [{
-            "id": "function:src/auth.py:login",
+            "id": "function:src/service.py:authenticate",
             "type": "FUNCTION",
-            "name": "login",
-            "file": "src/auth.py",
-            "source": local_id,
-            "relationship": "DESCRIBES",
-            "target": "function:src/auth.py:login",
+            "name": "authenticate",
+            "file": "src/service.py",
+            "source": "function:src/auth.py:login",
+            "relationship": "CALLS",
+            "target": "function:src/service.py:authenticate",
         }]
 
 
@@ -48,8 +58,11 @@ class GraphRAGRetrieverTest(unittest.TestCase):
         self.assertEqual(("repo-1", [0.2, 0.4], 3), vector_store.arguments)
         self.assertEqual("repo-1", graph_reader.arguments[0])
         self.assertEqual(1, len(result["semantic_chunks"]))
-        self.assertEqual(2, len(result["graph_context"]["nodes"]))
-        self.assertEqual("DESCRIBES", result["graph_context"]["relationships"][0]["relationship"])
+        self.assertEqual(3, len(result["graph_context"]["nodes"]))
+        self.assertEqual(
+            {"DESCRIBES", "CALLS"},
+            {edge["relationship"] for edge in result["graph_context"]["relationships"]},
+        )
 
     def test_rejects_blank_question(self):
         retriever = GraphRAGRetriever(
