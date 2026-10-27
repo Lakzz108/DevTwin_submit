@@ -1,7 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
-const NODE_TYPES = ["PROJECT", "FOLDER", "FILE", "CLASS", "INTERFACE", "FUNCTION", "METHOD", "PACKAGE", "MODULE", "API"];
 const COLORS = { PROJECT: "#3f6540", FOLDER: "#859b62", FILE: "#527b39", CLASS: "#5876ad", INTERFACE: "#728ac0", FUNCTION: "#ba8436", METHOD: "#a15b8e", PACKAGE: "#9d7849", MODULE: "#4b8987", API: "#bd6652", CODE_CHUNK: "#657078" };
 const DEPENDENCY_RELATIONSHIPS = new Set(["IMPORTS", "CALLS", "USES", "DEPENDS_ON", "EXTENDS", "IMPLEMENTS", "HANDLED_BY", "EXPORTS"]);
 
@@ -25,6 +24,7 @@ async function request(path, options = {}) {
 
 function App() {
   const [sourceMode, setSourceMode] = useState("github");
+  const [activeView, setActiveView] = useState("repository");
   const [repositoryInput, setRepositoryInput] = useState("");
   const [repositoryId, setRepositoryId] = useState("");
   const [ingestion, setIngestion] = useState(null);
@@ -51,6 +51,7 @@ function App() {
     setRepositoryId(""); setIngestion(null); setOverview(null); setGraph(null);
     setSelectedNode(null); setFileSummary(null); setQueryResult(null);
     setDependencyResult(null); setImpactResult(null);
+    setActiveView("repository");
   }
 
   async function receiveRepository(result) {
@@ -59,6 +60,7 @@ function App() {
     setOverview(result.project_understanding || null); setGraph(savedGraph);
     setSelectedNode(null); setFileSummary(null); setQueryResult(null);
     setDependencyResult(null); setImpactResult(null);
+    setActiveView("repository");
   }
 
   function analyzeRepository() {
@@ -122,8 +124,8 @@ function App() {
   const githubMode = sourceMode === "github";
   return (
     <main className="page-shell">
-      <header className="topbar"><a className="brand" href="#top" aria-label="DevTwin home"><span className="brand-mark">D</span><span>dev<span className="brand-light">twin</span></span></a><span className="product-label">SOFTWARE REPOSITORY UNDERSTANDING</span><span className="local-badge"><i /> LOCAL ANALYSIS</span></header>
-      <section className="hero" id="top">
+      <header className="topbar"><a className="brand" href="#top" aria-label="DevTwin home" onClick={() => setActiveView("repository")}><span className="brand-mark">D</span><span>dev<span className="brand-light">twin</span></span></a><span className="product-label">SOFTWARE REPOSITORY UNDERSTANDING</span><span className="local-badge"><i /> LOCAL ANALYSIS</span>{ready && <button className="topbar-view-button" type="button" onClick={() => setActiveView(activeView === "graph" ? "repository" : "graph")}>{activeView === "graph" ? "Repository overview" : "Graph Explorer"}</button>}</header>
+      {activeView !== "graph" && <section className="hero" id="top">
         <div className="eyebrow"><span /> CODEBASE COMPANION</div><h1>Understand the<br /><em>whole picture.</em></h1><p className="hero-copy">Explore what a project does, what each file contributes, and how repository components connect.</p>
         <section className="panel repository-panel"><div className="panel-heading"><div className="step-number">01</div><div><h2>Connect a repository</h2><p>Public GitHub URL is the primary input. Local folders are available for development.</p></div></div>
           <div className="source-tabs" role="tablist" aria-label="Repository source"><button type="button" className={githubMode ? "source-tab active" : "source-tab"} onClick={() => { setSourceMode("github"); clearResults(); }}>GitHub URL</button><button type="button" className={!githubMode ? "source-tab active" : "source-tab"} onClick={() => { setSourceMode("local"); clearResults(); }}>Local folder</button></div>
@@ -134,13 +136,17 @@ function App() {
           </form>
           {ingestion && <div className="ingestion-summary" role="status"><span className="success-dot" /><strong>{ingestion.repository_name || overview?.repository_name || "Repository ready"}</strong><span>{ingestion.files_analyzed} files analyzed</span>{ingestion.source === "github" && <span>Fetched from GitHub</span>}<button className="clear-repository" type="button" onClick={() => { clearResults(); setRepositoryInput(""); }} disabled={busy}>Clear</button></div>}
         </section>
-      </section>
+      </section>}
       {error && <div className="error-banner" role="alert">{error}</div>}
       {!ready && <section className="empty-workspace" aria-live="polite"><span className="step-number">02</span><div><h2>No repository selected</h2><p>Enter a public GitHub URL to begin. DevTwin fetches and analyzes it only after you select Analyze repository.</p></div></section>}
-      {ready && <>
-        {overview && <ProjectOverview overview={overview} onReanalyze={analyzeRepository} busy={busy} />}
-        <GraphExplorer graph={graph} selectedNodeId={selectedNode?.id} onSelectNode={selectGraphNode} />
+      {ready && activeView === "graph" && <section className="graph-explorer-page">
+        <div className="graph-page-heading"><div><button className="button button-outline graph-back-button" type="button" onClick={() => setActiveView("repository")}>← Back to repository</button><div className="section-kicker">REPOSITORY RELATIONSHIPS</div><h1>Graph Explorer</h1><p>Explore the analyzed knowledge graph. Select, search, filter, drag, pan, and zoom through repository components.</p></div><span className="graph-repository-name">{overview?.project_name || ingestion?.repository_name || "Analyzed repository"}</span></div>
+        <GraphExplorer key={repositoryId} graph={graph} selectedNodeId={selectedNode?.id} onSelectNode={selectGraphNode} />
         <SelectedComponent node={selectedNode} summary={fileSummary} busy={busy} onDependencies={() => lookup("dependencies")} onImpact={() => lookup("impact")} dependencyResult={dependencyResult} impactResult={impactResult} />
+      </section>}
+      {ready && activeView === "repository" && <>
+        {overview && <ProjectOverview overview={overview} onReanalyze={analyzeRepository} busy={busy} />}
+        <section className="panel graph-launch-card"><div><div className="section-kicker">EXPLORE THE KNOWLEDGE GRAPH</div><h2>See how repository components connect</h2><p>Open the dedicated graph view to search files and symbols, inspect relationships, and explore dependencies or potential impact.</p></div><button className="button button-primary" type="button" onClick={() => setActiveView("graph")}>Open Graph Explorer <span aria-hidden="true">→</span></button></section>
         <section className="workspace is-ready"><div className="workspace-header"><div className="step-number">04</div><div><h2>Ask DevTwin</h2><p>Retrieve code evidence and expand it with connected knowledge-graph context.</p></div></div>
           <section className="panel query-panel"><form onSubmit={askQuestion}><label className="sr-only" htmlFor="question">Ask about this repository</label><textarea id="question" rows="3" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Find code related to authentication or user login" disabled={!ready || busy} required />
             <div className="example-prompts"><span>Try:</span>{["Find code related to authentication", "Find code related to database connections", "Where is login implemented?"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)} disabled={busy}>{prompt}</button>)}</div>
@@ -175,14 +181,22 @@ function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
   const [relationshipFilter, setRelationshipFilter] = useState("ALL");
   const [search, setSearch] = useState("");
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  const [nodePositions, setNodePositions] = useState({});
   const drag = useRef(null);
+  const draggedNode = useRef(false);
   const nodesById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+  const nodeTypes = useMemo(() => [...new Set(graph.nodes.map((node) => node.type).filter((type) => type !== "CODE_CHUNK"))].sort(), [graph.nodes]);
   const relationshipTypes = useMemo(() => [...new Set(graph.relationships.map((edge) => edge.relationship))].sort(), [graph.relationships]);
+  const query = search.trim().toLowerCase();
   let nodes = graph.nodes.filter((node) => node.type !== "CODE_CHUNK");
   let edges = graph.relationships;
   if (mode === "overview") {
-    nodes = nodes.filter((node) => ["PROJECT", "FOLDER", "FILE"].includes(node.type));
-    edges = edges.filter((edge) => edge.relationship === "CONTAINS");
+    if (query) {
+      edges = graph.relationships;
+    } else {
+      nodes = nodes.filter((node) => ["PROJECT", "FOLDER", "FILE"].includes(node.type));
+      edges = edges.filter((edge) => edge.relationship === "CONTAINS");
+    }
   } else if (selectedNodeId) {
     if (mode === "neighborhood") edges = edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId);
     if (mode === "dependencies" || mode === "impact") {
@@ -212,7 +226,12 @@ function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
     nodes = [];
     edges = [];
   }
-  const query = search.trim().toLowerCase();
+  const availableTypes = mode === "overview"
+    ? (query ? nodeTypes : nodeTypes.filter((type) => ["PROJECT", "FOLDER", "FILE"].includes(type)))
+    : nodeTypes;
+  const availableRelationships = mode === "overview"
+    ? (query ? relationshipTypes : relationshipTypes.filter((type) => type === "CONTAINS"))
+    : relationshipTypes;
   if (query) nodes = nodes.filter((node) => `${node.name} ${node.file || ""} ${node.type}`.toLowerCase().includes(query));
   if (typeFilter !== "ALL") nodes = nodes.filter((node) => node.type === typeFilter);
   const matchCount = nodes.length;
@@ -232,6 +251,7 @@ function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
       const center = node.id === selectedNodeId;
       coords.set(node.id, center ? { x: 400, y: 250 } : { x: 400 + Math.cos(angle) * radius, y: 250 + Math.sin(angle) * radius });
     }
+    if (nodePositions[node.id]) coords.set(node.id, nodePositions[node.id]);
   });
   const graphHeight = mode === "overview"
     ? Math.max(500, ...Array.from(coords.values(), (point) => point.y + 80))
@@ -239,20 +259,47 @@ function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
   const selected = nodesById.get(selectedNodeId);
   function pointerDown(event) {
     if (event.target.closest?.(".graph-node")) return;
-    drag.current = { x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
+    drag.current = { kind: "pan", x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
+  function nodePointerDown(event, node) {
+    event.preventDefault();
+    event.stopPropagation();
+    draggedNode.current = false;
+    const point = coords.get(node.id);
+    drag.current = { kind: "node", id: node.id, x: event.clientX, y: event.clientY, nodeX: point.x, nodeY: point.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function nodePointerUp(event, node) {
+    event.stopPropagation();
+    const wasDragged = draggedNode.current;
+    drag.current = null;
+    if (!wasDragged) onSelectNode(node);
+    draggedNode.current = false;
+  }
   function pointerMove(event) {
-    if (drag.current) setView((old) => ({ ...old, x: drag.current.viewX + event.clientX - drag.current.x, y: drag.current.viewY + event.clientY - drag.current.y }));
+    if (!drag.current) return;
+    if (drag.current.kind === "node") {
+      const activeDrag = drag.current;
+      const dx = event.clientX - activeDrag.x;
+      const dy = event.clientY - activeDrag.y;
+      if (Math.hypot(dx, dy) > 4) draggedNode.current = true;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const x = activeDrag.nodeX + (dx * 800) / Math.max(bounds.width, 1) / view.scale;
+      const y = activeDrag.nodeY + (dy * graphHeight) / Math.max(bounds.height, 1) / view.scale;
+      setNodePositions((positions) => ({ ...positions, [activeDrag.id]: { x, y } }));
+      return;
+    }
+    setView((old) => ({ ...old, x: drag.current.viewX + event.clientX - drag.current.x, y: drag.current.viewY + event.clientY - drag.current.y }));
   }
   return <section className="panel repository-graph" aria-label="Interactive repository relationship graph"><div className="graph-title-row"><div><div className="section-kicker">KNOWLEDGE GRAPH</div><h2>Explore repository relationships</h2><p>Choose a focused view, then drag to pan, zoom, and select a component.</p></div><div className="graph-total-badges"><span><strong>{graph.total_nodes}</strong> nodes</span><span><strong>{graph.total_relationships}</strong> relationships</span></div></div>
-    <div className="source-tabs graph-view-tabs" role="tablist" aria-label="Graph view"><button type="button" className={mode === "overview" ? "source-tab active" : "source-tab"} onClick={() => { setMode("overview"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }}>Project structure</button><button type="button" className={mode === "neighborhood" ? "source-tab active" : "source-tab"} onClick={() => { setMode("neighborhood"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Component links</button><button type="button" className={mode === "dependencies" ? "source-tab active" : "source-tab"} onClick={() => { setMode("dependencies"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Depends on · 3 hops</button><button type="button" className={mode === "impact" ? "source-tab active" : "source-tab"} onClick={() => { setMode("impact"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); }} disabled={!selectedNodeId}>Used by / impact · 3 hops</button></div>
-    <div className="graph-controls"><label htmlFor="node-type-filter">Node type</label><select id="node-type-filter" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="ALL">All visible</option>{(mode === "overview" ? ["PROJECT", "FOLDER", "FILE"] : NODE_TYPES.filter((type) => type !== "CODE_CHUNK")).map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><label htmlFor="relationship-filter">Relationship</label><select id="relationship-filter" value={relationshipFilter} onChange={(event) => setRelationshipFilter(event.target.value)}><option value="ALL">All visible</option>{(mode === "overview" ? ["CONTAINS"] : relationshipTypes).map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><input aria-label="Search graph nodes" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search files and symbols" /><div className="zoom-actions"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(2.2, v.scale + 0.2) }))} aria-label="Zoom in">+</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.55, v.scale - 0.2) }))} aria-label="Zoom out">−</button><button type="button" onClick={() => setView({ x: 0, y: 0, scale: 1 })}>Reset view</button></div></div>
-    <div className="graph-legend">{NODE_TYPES.map((type) => <span key={type}><i style={{ backgroundColor: COLORS[type] }} />{type.toLowerCase()}</span>)}</div>
+    <div className="source-tabs graph-view-tabs" role="tablist" aria-label="Graph view"><button type="button" className={mode === "overview" ? "source-tab active" : "source-tab"} onClick={() => { setMode("overview"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); setSearch(""); }}>Project structure</button><button type="button" className={mode === "neighborhood" ? "source-tab active" : "source-tab"} onClick={() => { setMode("neighborhood"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); setSearch(""); }} disabled={!selectedNodeId}>Component links</button><button type="button" className={mode === "dependencies" ? "source-tab active" : "source-tab"} onClick={() => { setMode("dependencies"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); setSearch(""); }} disabled={!selectedNodeId}>Depends on · 3 hops</button><button type="button" className={mode === "impact" ? "source-tab active" : "source-tab"} onClick={() => { setMode("impact"); setTypeFilter("ALL"); setRelationshipFilter("ALL"); setSearch(""); }} disabled={!selectedNodeId}>Used by / impact · 3 hops</button></div>
+    <div className="graph-controls"><label htmlFor="node-type-filter">Node type</label><select id="node-type-filter" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="ALL">All visible</option>{availableTypes.map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><label htmlFor="relationship-filter">Relationship</label><select id="relationship-filter" value={relationshipFilter} onChange={(event) => setRelationshipFilter(event.target.value)}><option value="ALL">All visible</option>{availableRelationships.map((type) => <option value={type} key={type}>{type.replaceAll("_", " ")}</option>)}</select><input aria-label="Search graph nodes" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search files and symbols" /><div className="zoom-actions"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(2.2, v.scale + 0.2) }))} aria-label="Zoom in">+</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.55, v.scale - 0.2) }))} aria-label="Zoom out">−</button><button type="button" onClick={() => { setView({ x: 0, y: 0, scale: 1 }); setNodePositions({}); }}>Reset view</button></div></div>
+    <div className="graph-legend">{nodeTypes.map((type) => <span key={type}><i style={{ backgroundColor: COLORS[type] || COLORS.MODULE }} />{type.toLowerCase()}</span>)}</div>
     <div className="svg-graph-wrap">{nodes.length === 0 ? <p className="empty-state graph-empty">{selectedNodeId ? "No relationships match this view and filter." : "Select a node to see its links, dependencies, or potential impact."}</p> : <svg className="knowledge-svg" viewBox={`0 0 800 ${graphHeight}`} role="img" aria-label="Node-link view of repository files and relationships" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
       <defs><marker id="edge-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a6b29e" /></marker></defs><g transform={`translate(${view.x} ${view.y}) translate(400 250) scale(${view.scale}) translate(-400 -250)`}>
         {edges.map((edge, index) => { const from = coords.get(edge.source); const to = coords.get(edge.target); if (!from || !to) return null; const mx = (from.x + to.x) / 2; const my = (from.y + to.y) / 2; return <g key={`${edge.source}-${edge.relationship}-${edge.target}-${index}`}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className="graph-edge" markerEnd="url(#edge-arrow)" />{edges.length < 35 && <text x={mx} y={my - 4} className="graph-edge-label">{edge.relationship.replaceAll("_", " ")}</text>}</g>; })}
-        {nodes.map((node) => { const point = coords.get(node.id); const label = node.name || node.file || node.id; return <g key={node.id} className={`graph-node ${selectedNodeId === node.id ? "selected" : ""}`} role="button" tabIndex="0" aria-label={`${node.type}: ${label}`} onClick={() => onSelectNode(node)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelectNode(node); }}><title>{node.type}: {label}</title><circle cx={point.x} cy={point.y} r={selectedNodeId === node.id ? 22 : 18} fill={COLORS[node.type] || COLORS.MODULE} /><text x={point.x} y={point.y + 3} className="graph-node-type">{node.type === "FUNCTION" ? "FN" : node.type === "METHOD" ? "M" : node.type.slice(0, 3)}</text><text x={point.x} y={point.y + (mode === "overview" ? 27 : 34)} className="graph-node-label">{label.length > 22 ? `${label.slice(0, 20)}…` : label}</text></g>; })}
+        {nodes.map((node) => { const point = coords.get(node.id); const label = node.name || node.file || node.id; const matchesSearch = !query || `${node.name} ${node.file || ""} ${node.type}`.toLowerCase().includes(query); return <g key={node.id} className={`graph-node ${selectedNodeId === node.id ? "selected" : ""} ${query && matchesSearch ? "search-match" : ""}`} role="button" tabIndex="0" aria-label={`${node.type}: ${label}`} onPointerDown={(event) => nodePointerDown(event, node)} onPointerUp={(event) => nodePointerUp(event, node)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelectNode(node); }}><title>{node.type}: {label}</title><circle cx={point.x} cy={point.y} r={selectedNodeId === node.id ? 22 : 18} fill={COLORS[node.type] || COLORS.MODULE} /><text x={point.x} y={point.y + 3} className="graph-node-type">{node.type === "FUNCTION" ? "FN" : node.type === "METHOD" ? "M" : node.type.slice(0, 3)}</text><text x={point.x} y={point.y + (mode === "overview" ? 27 : 34)} className="graph-node-label">{label.length > 22 ? `${label.slice(0, 20)}…` : label}</text></g>; })}
       </g></svg>}</div>
     <div className="graph-footer"><span>{nodes.length} shown{matchCount > nodes.length ? ` of ${matchCount} matching nodes` : ""}{graph.truncated ? " · graph result is truncated" : ""}</span>{selected && <button type="button" className="clear-selection" onClick={() => onSelectNode(null)}>Clear selection</button>}</div>
   </section>;
@@ -262,7 +309,7 @@ function SelectedComponent({ node, summary, busy, onDependencies, onImpact, depe
   if (!node) return <section className="panel selected-component"><div className="section-kicker">SELECTED COMPONENT</div><p className="empty-state">Select a node in the graph to inspect source facts and relationships.</p></section>;
   const displayName = summary?.file || node.file || node.name;
   return <section className="panel selected-component"><div className="component-heading"><div><div className="section-kicker">SELECTED COMPONENT</div><h2>{displayName}</h2></div><span className={`node-type node-type-${node.type.toLowerCase()}`}>{node.type}</span></div>
-    {node.type === "FILE" ? busy && !summary ? <p className="empty-state">Reading selected file…</p> : summary && <><p className="component-purpose">{summary.purpose}</p><small className="evidence-note">{summary.explanation_basis}</small>{summary.documented_components?.length > 0 && <div className="documented-components">{summary.documented_components.map((component) => <div key={`${component.kind}-${component.name}`}><code>{component.kind} · {component.name}</code><p>{component.purpose}</p></div>)}</div>}<div className="component-facts"><FactList title="Language" values={[summary.language]} /><FactList title="Classes" values={summary.classes} /><FactList title="Interfaces" values={summary.interfaces} /><FactList title="Functions" values={summary.functions} /><FactList title="Methods" values={summary.methods} /><FactList title="Imports / dependencies" values={summary.dependencies} /><FactList title="Used by" values={summary.used_by} /><FactList title="Exports" values={summary.exports} /><FactList title="API endpoints" values={(summary.api_endpoints || []).map((item) => `${item.method} ${item.path}${item.handler ? ` → ${item.handler}` : ""}`)} /><FactList title="Resolved static call links" values={summary.calls} /></div><div className="graph-actions"><button className="button button-outline" type="button" onClick={onDependencies} disabled={busy}>Dependencies</button><button className="button button-outline" type="button" onClick={onImpact} disabled={busy}>Potential impact</button></div>{dependencyResult && <NodeList title="Dependencies" items={dependencyResult.dependencies} empty="No outgoing dependencies found." />}{impactResult && <NodeList title="Potentially affected" items={impactResult.impacted_components} empty="No incoming dependents found." />}</> : <><p className="component-purpose">This node was extracted as a <strong>{node.type.toLowerCase()}</strong> named <strong>{node.name}</strong>. Its source path and direct relationships are available in the graph views.</p><div className="component-facts"><FactList title="Source file" values={node.file ? [node.file] : []} /><FactList title="Folder or package path" values={node.path ? [node.path] : []} /><FactList title="Language" values={node.language ? [node.language] : []} /></div></>}
+    {node.type === "FILE" ? busy && !summary ? <p className="empty-state">Reading selected file…</p> : summary && <><p className="component-purpose">{summary.purpose}</p><small className="evidence-note">{summary.explanation_basis}</small>{summary.documented_components?.length > 0 && <div className="documented-components">{summary.documented_components.map((component) => <div key={`${component.kind}-${component.name}`}><code>{component.kind} · {component.name}</code><p>{component.purpose}</p></div>)}</div>}<div className="component-facts"><FactList title="Language" values={[summary.language]} /><FactList title="Classes" values={summary.classes} /><FactList title="Interfaces" values={summary.interfaces} /><FactList title="Functions" values={summary.functions} /><FactList title="Methods" values={summary.methods} /><FactList title="Imports / dependencies" values={summary.dependencies} /><FactList title="Used by" values={summary.used_by} /><FactList title="Exports" values={summary.exports} /><FactList title="API endpoints" values={(summary.api_endpoints || []).map((item) => `${item.method} ${item.path}${item.handler ? ` → ${item.handler}` : ""}`)} /><FactList title="Resolved static call links" values={summary.calls} /></div><div className="graph-actions"><button className="button button-outline" type="button" onClick={onDependencies} disabled={busy}>Dependencies</button><button className="button button-outline" type="button" onClick={onImpact} disabled={busy}>Potential impact</button></div>{dependencyResult && <NodeList title="Dependencies" items={dependencyResult.dependencies} empty="No outgoing dependencies found." />}{impactResult && <NodeList title="Potentially affected" items={impactResult.impacted_components} empty="No incoming dependents found." />}</> : <><p className="component-purpose">This node was extracted as a <strong>{node.type.toLowerCase()}</strong> named <strong>{node.name}</strong>. Its source path and direct relationships are available in the graph views.</p><div className="component-facts"><FactList title="Source file" values={node.file ? [node.file] : []} /><FactList title="Folder or package path" values={node.path ? [node.path] : []} /><FactList title="Language" values={node.language ? [node.language] : []} />{node.path && node.type === "API" && <FactList title="Route path" values={[node.path]} />}{node.method && <FactList title="HTTP method" values={[node.method]} />}{node.handler && <FactList title="Handler" values={[node.handler]} />}{node.resolution && <FactList title="Import resolution" values={[node.resolution]} />}{node.start_line != null && <FactList title="Start line" values={[String(node.start_line)]} />}{node.end_line != null && <FactList title="End line" values={[String(node.end_line)]} />}{node.parse_error && <FactList title="Parse status" values={["A parser error was recorded for this file."]} />}</div></>}
   </section>;
 }
 
