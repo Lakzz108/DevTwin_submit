@@ -2,7 +2,8 @@
 
 DevTwin uses Neo4j for its repository graph/vector index and a local FastEmbed
 model for semantic retrieval. It does not require an OpenAI key or send
-repository source to a paid API. Generative LLM answers are not connected yet.
+repository source to a paid API. Optional natural-language answers use a local
+Ollama server; answer generation is disabled unless enabled in `.env`.
 
 ## Start the backend
 
@@ -63,12 +64,17 @@ handlers, and code-chunk links. The UI offers project-structure,
 selected-component, dependency, and impact views with filters, search, zoom,
 pan, and component facts. Relationship edges are static evidence; runtime
 control flow is not inferred. File explanations use source comments/docstrings
-and parsed facts. Generative LLM answers are not connected.
+and parsed facts.
 
 Question retrieval uses local embeddings to find code chunks and expands from
-those chunk nodes through a bounded two-hop Neo4j graph neighborhood. The UI
-displays semantic code and graph context separately; it does not yet generate
-an LLM answer. Private GitHub repositories are not supported. Cloned
+those chunk nodes through a bounded two-hop Neo4j graph neighborhood. When
+enabled and a local Ollama server is running, DevTwin generates an answer from
+only those retrieved chunks and graph relationships; the response still
+includes the evidence separately. To enable it, set
+`DEVTWIN_LLM_ENABLED=true` in `.env` and optionally set
+`DEVTWIN_LLM_MODEL` and `DEVTWIN_LLM_BASE_URL`. DevTwin never downloads the
+model. If Ollama is unavailable, retrieval results are still returned with a
+clear answer-generation status. Private GitHub repositories are not supported. Cloned
 repositories persist under the ignored `data/repositories/` directory until
 manually removed.
 

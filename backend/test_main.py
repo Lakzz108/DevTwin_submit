@@ -201,6 +201,81 @@ class BackendApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["detail"], "Please enter a question first.")
 
+    def test_query_returns_retrieval_evidence_graph_context_and_generated_answer(self):
+        retrieval = {
+            "semantic_chunks": [{"id": "chunk:auth", "file": "auth.py", "score": 0.9}],
+            "graph_context": {"nodes": [{"id": "file:auth", "type": "FILE"}], "relationships": []},
+        }
+
+        class Retriever:
+            def __init__(self, *args):
+                pass
+
+            def retrieve(self, repository_id, question, top_k):
+                self.arguments = (repository_id, question, top_k)
+                return dict(retrieval)
+
+        class Generator:
+            def generate(self, question, semantic_chunks, graph_context):
+                self.arguments = (question, semantic_chunks, graph_context)
+                return "The retrieved auth.py chunk contains the relevant implementation."
+
+        writer = FakeWriter()
+        with (
+            patch.object(main, "open_writer", return_value=writer),
+            patch.object(main, "GraphRAGRetriever", Retriever),
+            patch.object(main, "get_answer_generator", return_value=Generator()),
+        ):
+            response = self.client.post(
+                "/repositories/repo-1/query",
+                json={"question": "Where is authentication?", "top_k": 3},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["answer"], "The retrieved auth.py chunk contains the relevant implementation.")
+        self.assertEqual(response.json()["semantic_chunks"], retrieval["semantic_chunks"])
+        self.assertEqual(response.json()["graph_context"], retrieval["graph_context"])
+        self.assertTrue(writer.closed)
+
+    def test_query_preserves_retrieval_when_answer_generation_is_unavailable(self):
+        retrieval = {
+            "semantic_chunks": [{"id": "chunk:auth", "file": "auth.py", "score": 0.9}],
+            "graph_context": {"nodes": [], "relationships": []},
+        }
+
+        class Retriever:
+            def __init__(self, *args):
+                pass
+
+            def retrieve(self, repository_id, question, top_k):
+                return dict(retrieval)
+
+        class BrokenGenerator:
+            def generate(self, *args):
+                raise ConnectionError("local model is unavailable")
+
+        with (
+            patch.object(main, "open_writer", return_value=FakeWriter()),
+            patch.object(main, "GraphRAGRetriever", Retriever),
+            patch.object(main, "get_answer_generator", return_value=BrokenGenerator()),
+        ):
+            response = self.client.post(
+                "/repositories/repo-1/query",
+                json={"question": "Where is authentication?"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("unavailable", response.json()["answer"].lower())
+        self.assertEqual(response.json()["semantic_chunks"], retrieval["semantic_chunks"])
+        self.assertEqual(response.json()["graph_context"], retrieval["graph_context"])
+
+    def test_query_top_k_above_limit_is_rejected(self):
+        response = self.client.post(
+            "/repositories/repo-1/query",
+            json={"question": "Where is authentication?", "top_k": 21},
+        )
+        self.assertEqual(response.status_code, 422)
+
     def test_ingests_local_python_repository(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_file = Path(temp_dir) / "example.py"

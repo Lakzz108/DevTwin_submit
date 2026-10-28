@@ -33,16 +33,14 @@ from graph.neo4j_queries import Neo4jGraphReader  # noqa: E402
 from graph.neo4j_writer import Neo4jGraphWriter  # noqa: E402
 from graph_builder import build_graph_data  # noqa: E402
 from rag.embedding_service import FastEmbedEmbeddingProvider  # noqa: E402
+from rag.answer_generator import LocalAnswerGenerator, UNAVAILABLE_ANSWER  # noqa: E402
 from rag.graphrag_retriever import GraphRAGRetriever  # noqa: E402
 from rag.neo4j_vector_store import Neo4jVectorStore  # noqa: E402
 
 
 app = FastAPI(
     title="DevTwin API",
-    description=(
-        "Repository graph and GraphRAG retrieval API. Retrieval results include "
-        "code evidence and graph context; they are not generated LLM answers."
-    ),
+    description="Repository analysis, GraphRAG retrieval, and evidence-grounded answers.",
     version="0.1.0",
 )
 app.add_middleware(
@@ -55,6 +53,7 @@ app.add_middleware(
 )
 
 _embedding_provider = None
+_answer_generator = None
 _repository_cache = {}
 logger = logging.getLogger(__name__)
 
@@ -96,6 +95,15 @@ def get_embedding_provider():
     if _embedding_provider is None:
         _embedding_provider = FastEmbedEmbeddingProvider()
     return _embedding_provider
+
+
+def get_answer_generator():
+    """Create the local answer generator once per API process."""
+
+    global _answer_generator
+    if _answer_generator is None:
+        _answer_generator = LocalAnswerGenerator()
+    return _answer_generator
 
 
 def make_repository_id(repository_path):
@@ -392,7 +400,7 @@ def repository_file_summary(request: FileSummaryRequest):
 
 @app.post("/repositories/{repository_id}/query")
 def query_repository(repository_id: str, request: QueryRequest):
-    """Return semantic code matches with their connected graph context."""
+    """Return retrieved evidence, graph context, and a grounded answer when available."""
 
     writer = open_writer()
     try:
@@ -402,13 +410,23 @@ def query_repository(repository_id: str, request: QueryRequest):
             Neo4jGraphReader(writer.driver, writer.database),
         )
         try:
-            return retriever.retrieve(
+            result = retriever.retrieve(
                 repository_id,
                 request.question,
                 top_k=request.top_k,
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+        try:
+            result["answer"] = get_answer_generator().generate(
+                request.question,
+                result["semantic_chunks"],
+                result["graph_context"],
+            )
+        except Exception:
+            logger.exception("Local answer generation failed; returning retrieval evidence")
+            result["answer"] = UNAVAILABLE_ANSWER
+        return result
     finally:
         writer.close()
 
