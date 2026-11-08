@@ -161,9 +161,10 @@ function App() {
 
 function ProjectOverview({ overview, onReanalyze, busy }) {
   const stats = overview.statistics || {};
+  const purposeDescription = projectPurposeDescription(overview);
   const statItems = [["Files", stats.files], ["Classes", stats.classes], ["Interfaces", stats.interfaces], ["Functions", stats.functions], ["Methods", stats.methods], ["API endpoints", stats.apis], ["Graph nodes", stats.graph_nodes], ["Relationships", stats.relationships], ["Calls", stats.calls], ["Code chunks", stats.code_chunks]];
   return <section className="overview-section"><div className="overview-heading"><div><div className="section-kicker">PROJECT OVERVIEW</div><h2>{overview.project_name || overview.repository_name}</h2>{overview.project_type && <span className="info-tag project-type-tag">{overview.project_type}</span>}<p>Repository-level facts with evidence sources shown.</p></div><button className="button button-outline" type="button" onClick={onReanalyze} disabled={busy}>Re-analyze repository</button></div>
-    <div className="overview-grid"><article className="panel overview-card overview-purpose"><div className="section-kicker">WHAT THIS PROJECT DOES</div><p>{overview.summary || overview.purpose}</p><small>{overview.purpose_evidence ? `Source: ${overview.purpose_evidence}` : "No purpose statement found in README or project metadata"}</small></article><article className="panel overview-card"><div className="section-kicker">HIGH-LEVEL ARCHITECTURE</div><p>{overview.architecture_summary || overview.how_it_works}</p><small>{overview.architecture_note}</small><small className="scope-note">{overview.analysis_scope}</small></article></div>
+    <div className="overview-grid"><article className="panel overview-card overview-purpose"><div className="section-kicker">WHAT THIS PROJECT DOES</div><p>{purposeDescription}</p><small>{overview.purpose_evidence ? `Source: ${overview.purpose_evidence}` : "No purpose statement found in README or project metadata"}</small></article><article className="panel overview-card"><div className="section-kicker">HIGH-LEVEL ARCHITECTURE</div><p>{overview.architecture_summary || overview.how_it_works}</p><small>{overview.architecture_note}</small><small className="scope-note">{overview.analysis_scope}</small></article></div>
     <div className="overview-grid overview-lists"><article className="panel overview-card"><div className="section-kicker">LANGUAGES, FRAMEWORKS & DEPENDENCIES</div><div className="tag-list">{(overview.languages || []).map((item) => <span className="info-tag" key={item.name}>{item.name} · {item.files}</span>)}{(overview.frameworks || []).map((item) => <span className="info-tag framework-tag" key={item.name}>{item.name}</span>)}{(overview.dependencies || overview.technologies || []).slice(0, 12).map((item) => <span className="info-tag tech-tag" key={item}>{item}</span>)}</div>{!overview.languages?.length && !overview.frameworks?.length && !overview.dependencies?.length && !overview.technologies?.length && <p className="empty-state">No language or package evidence found.</p>}</article>
       <article className="panel overview-card"><div className="section-kicker">MAIN COMPONENTS & DIRECTORIES</div>{overview.main_components?.length ? <div className="component-summary-list">{overview.main_components.slice(0, 8).map((component, index) => <div key={`${component.file || component.name}-${index}`}><strong>{component.name}</strong>{component.file && <code>{component.file}</code>}<p>{component.description}</p><small>{component.evidence}</small></div>)}</div> : <p className="empty-state">No major source directories or documented components were identified.</p>}{overview.entry_points?.length > 0 && <div className="compact-list entry-list">{overview.entry_points.slice(0, 8).map((entry, index) => <span key={`${entry.file}-${entry.name}-${index}`}><code>{entry.file} · {entry.name}</code><small>{entry.evidence}</small></span>)}</div>}</article>
       <article className="panel overview-card"><div className="section-kicker">REPOSITORY STATISTICS</div><div className="stats-grid overview-stats">{statItems.map(([label, value]) => <div className="panel stat-card" key={label}><strong>{value ?? 0}</strong><span>{label}</span></div>)}</div></article>
@@ -173,6 +174,53 @@ function ProjectOverview({ overview, onReanalyze, busy }) {
       {overview.most_connected_files?.length > 0 && <article className="panel overview-card"><div className="section-kicker">MOST CONNECTED FILES · STATIC IMPORT EDGES</div><div className="tag-list">{overview.most_connected_files.slice(0, 6).map((item) => <span className="info-tag" key={item.file}>{item.file} · {item.connections}</span>)}</div></article>}
       <article className="panel overview-card architecture-card"><div className="section-kicker">STATIC IMPORT ANALYSIS</div><p>Imports come from parsed source statements. Calls and API links are shown in the knowledge graph; runtime control flow is not inferred.</p>{overview.architecture_edges?.length ? <details className="overview-disclosure"><summary>Show {overview.architecture_edges.length} sample import edges · {overview.import_analysis?.internal || 0} internal resolved</summary><div className="architecture-links">{overview.architecture_edges.map((edge, index) => <span key={`${edge.source}-${edge.target}-${index}`}><code>{edge.source}</code><b>imports</b><code>{edge.target}</code></span>)}</div></details> : overview.import_analysis?.total ? <p className="empty-state">{overview.import_analysis.total} imports were detected, but none resolved to a displayed graph edge. Check unresolved imports and graph storage.</p> : <p className="empty-state">No source imports were detected in this repository.</p>}</article>
   </section>;
+}
+
+function projectPurposeDescription(overview) {
+  const purpose = overview.summary || overview.purpose;
+  if (purpose && !/^not enough information/i.test(purpose)) return purpose;
+
+  const stats = overview.statistics || {};
+  const projectType = overview.project_type?.toLowerCase();
+  const description = projectType
+    ? `The analyzed repository is a ${projectType}.`
+    : "DevTwin has analyzed and mapped this repository's source structure.";
+  const details = [description];
+  const directories = overview.folders || overview.directory_summary || [];
+  if (directories.length) {
+    details.push(`Its structure includes ${directories.length} identified source directories.`);
+  }
+
+  const entityCounts = [
+    ["class", stats.classes],
+    ["interface", stats.interfaces],
+    ["function", stats.functions],
+    ["method", stats.methods],
+    ["API endpoint", stats.apis],
+  ].filter(([, count]) => Number(count) > 0)
+    .map(([label, count]) => `${count} ${Number(count) === 1 ? label : `${label}s`}`);
+  if (entityCounts.length) {
+    const entities = entityCounts.length === 1
+      ? entityCounts[0]
+      : `${entityCounts.slice(0, -1).join(", ")}, and ${entityCounts.at(-1)}`;
+    details.push(`DevTwin extracted ${entities} from the source files.`);
+  }
+
+  const imports = overview.import_analysis;
+  if (Number(imports?.total) > 0) {
+    details.push(
+      `It identified ${imports.total} static imports, including ${imports.internal || 0} internal, ${imports.external || 0} external, and ${imports.unresolved || 0} unresolved imports.`,
+    );
+  }
+  if (Number(stats.code_chunks) > 0) {
+    details.push(`It created ${stats.code_chunks} semantic code chunks for retrieval.`);
+  }
+  if (Number(stats.graph_nodes) > 0 || Number(stats.relationships) > 0) {
+    details.push(
+      `Its knowledge graph contains ${stats.graph_nodes || 0} nodes and ${stats.relationships || 0} component relationships.`,
+    );
+  }
+  return details.join(" ");
 }
 
 function GraphExplorer({ graph, selectedNodeId, onSelectNode }) {
